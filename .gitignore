@@ -3,3 +3,6 @@
 local/
 .DS_Stor
 .claude
+
+# Local session checkpoints
+/.checkpoints/
