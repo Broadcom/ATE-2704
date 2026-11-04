@@ -25,7 +25,7 @@ Core:     HOLFY27-MGR-HOLUSER commit 5be280a on the Manager
 2. FILES IN THE ATE-2704 REPO
 -----------------------------
 
-  config.ini             CHANGED (v2.3)
+  config.ini             CHANGED (v2.4)
       All lab VMs, ping/TCP/URL checks, [VCF], [VCFFINAL] and [SHUTDOWN]
       settings for the 8.x / 5.2.1 baseline.
       v2.1: added Workspace ONE Access (vidm-01b) and Aria Automation 8.18.1
@@ -33,7 +33,7 @@ Core:     HOLFY27-MGR-HOLUSER commit 5be280a on the Manager
       v2.2: added [SHUTDOWN] vra_prep_hosts and vra_prep_timeout (read only
             by the shutdown wrapper; the core ignores them).
 
-  Startup/VCFfinal.py    NEW (v1.2)
+  Startup/VCFfinal.py    NEW (v1.3)
       Lab override of the core VCFfinal module. The core VCFfinal runs VCF
       9.x-only tasks whenever a [VCFFINAL] section exists (WCP tuning, VSP,
       VCF Automation 9 remediation, NSX password policy, Vault CA). This
@@ -234,9 +234,28 @@ Core:     HOLFY27-MGR-HOLUSER commit 5be280a on the Manager
      running). config.ini v2.3: new [VCFFINAL] vra_start_hosts and
      vra_node_wait_minutes; auto-01b:443 removed from TCPServices (the port is
      closed until deploy.sh finishes; [VCFFINAL] vraurls checks it instead);
-     vraurl_wait_minutes 35 -> 60.
+     vraurl_wait_minutes 35 -> 60, and [VPOD] maxminutes 60 -> 90 (the
+     overall limit is checked in every module wait, so it also caps the
+     Aria wait).
      In this test deploy.sh had been started by hand, so Task 2b took its
      "already running" branch; the "start it" branch runs on the next full boot.
+
+
+6c. FOLLOW-UP CHANGES (2026-11-04, AFTER THE SECOND TEST)
+-------------------------------------------------------
+
+  - Startup/VCFfinal.py v1.3, Task 0: enables SSH on all [RESOURCES]
+    vCenters through the appliance API with {"enabled": true} where it is
+    off (works around 7.6; [VCFFINAL] vcenter_ssh = false turns it off).
+    Never fails the lab. Tested live: all three vCenters "already enabled".
+  - config.ini v2.4: demo-002 (Aria Automation demo VM, seg-01b
+    10.2.13.10) added to [RESOURCES] VMs (started by vSphere.py) and
+    [SHUTDOWN] workload_vms (Phase 4). SDDC Manager ping 10.2.1.5 removed
+    from Pings (the VM starts after the ping check; sddcmanager-b:443 in
+    TCPServices covers it).
+  - Aria Automation: Monthly Lease Policy deleted and the demo deployment's
+    lease set to Never, so demo-002 survives in pods deployed from the
+    template.
 
 
 7. REQUESTS FOR THE CORE TEAM
@@ -267,6 +286,18 @@ Core:     HOLFY27-MGR-HOLUSER commit 5be280a on the Manager
   7.5 labstartup.py --dry-run is accepted but ignored.
       It should either be honoured or removed, so nobody starts a lab by
       accident while testing.
+
+  7.6 vSphere.py cannot enable vCenter SSH on vCenter 8.0 U3.
+      It sends PUT /api/appliance/access/ssh with the body "true"
+      (json=True). vCenter 8.0 U3 answers HTTP 400; it expects
+      {"enabled": true}. On 2026-11-04 vc-wld01-b came up with SSH off, the
+      startup could not fix it ("Failed to enable SSH (HTTP 400)"), and the
+      next shutdown could not stop WCP or pause the Supervisor (Phase 3/3b
+      "SSH port not reachable"); vCenter then restarted the control plane VMs
+      and Phase 19c had to power them off. SSH was then enabled with
+      {"enabled": true} (HTTP 204). The bash-shell call (access/shell) also
+      returns HTTP 500 on all three vCenters; harmless here because root's
+      shell is already bash.
 
 
 8. DEPLOYMENT NOTES / OPEN ITEMS

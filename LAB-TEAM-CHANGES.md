@@ -15,8 +15,8 @@ these overrides necessary.
 
 | File | Status | Purpose |
 |---|---|---|
-| `config.ini` | changed (v2.3) | All lab VMs, checks, `[VCFFINAL]` and `[SHUTDOWN]` settings for an 8.x / 5.2.1 baseline |
-| `Startup/VCFfinal.py` | new (v1.2) | Lab override of the core VCFfinal: only Supervisor wait, Aria Automation power-on, Aria URL wait (skips VCF 9.x-only tasks). v1.1: standalone runs load config.ini like the core modules |
+| `config.ini` | changed (v2.4) | All lab VMs, checks, `[VCFFINAL]` and `[SHUTDOWN]` settings for an 8.x / 5.2.1 baseline |
+| `Startup/VCFfinal.py` | new (v1.3) | Lab override of the core VCFfinal: only Supervisor wait, Aria Automation power-on, Aria URL wait (skips VCF 9.x-only tasks). v1.1: standalone runs load config.ini like the core modules |
 | `Shutdown/Shutdown.py` | new | Wrapper: stops Aria Automation 8.x services with `deploy.sh --shutdown`, then runs the core `~/hol/Shutdown/Shutdown.py` with the same options |
 | `SHUTDOWN.MD` | changed | Shutdown procedure for this lab |
 | `LAB-TEAM-CHANGES.md` | new | This file |
@@ -141,8 +141,21 @@ test deployment); all 12 hosts off in 106 s.
    (skipped if pods exist or deploy.sh is already running). `config.ini` v2.3 adds
    `[VCFFINAL] vra_start_hosts` / `vra_node_wait_minutes`, removes `auto-01b:443` from
    `TCPServices` (closed until deploy.sh finishes) and raises `vraurl_wait_minutes`
-   to 60. In this test deploy.sh had already been started by hand, so Task 2b took
+   to 60, and `[VPOD] maxminutes` from 60 to 90 (the overall limit is checked in every module wait, so it also caps the Aria wait). In this test deploy.sh had already been started by hand, so Task 2b took
    its "already running" branch; the "start it" branch runs on the next full boot.
+
+## Follow-up changes (2026-11-04, after the second test)
+
+- `Startup/VCFfinal.py` v1.3, **Task 0**: enables SSH on all `[RESOURCES] vCenters`
+  through the appliance API with `{"enabled": true}` where it is off (works around
+  request 6 below; `[VCFFINAL] vcenter_ssh = false` turns it off). Never fails the lab.
+  Tested against the live lab: all three vCenters reported "already enabled".
+- `config.ini` v2.4: `demo-002` (Aria Automation demo VM, seg-01b 10.2.13.10) added to
+  `[RESOURCES] VMs` (started by vSphere.py) and `[SHUTDOWN] workload_vms` (Phase 4);
+  the SDDC Manager ping 10.2.1.5 removed from `Pings` (the VM starts after the ping
+  check; `sddcmanager-b:443` in `TCPServices` covers it).
+- Aria Automation: the Monthly Lease Policy was deleted and the demo deployment's
+  lease set to Never, so `demo-002` is not destroyed in pods deployed from the template.
 
 ## Requests for the core team
 
@@ -162,6 +175,15 @@ test deployment); all 12 hosts off in 106 s.
    above working as they do now. This lab's shutdown depends on them.
 5. `labstartup.py --dry-run` is accepted but ignored; it should either be
    honoured or removed, so nobody starts a lab by accident while testing.
+6. **vSphere.py cannot enable vCenter SSH on 8.0 U3.** It sends
+   `PUT /api/appliance/access/ssh` with body `true` (`json=True`); vCenter 8.0 U3
+   answers HTTP 400 and expects `{"enabled": true}`. On 2026-11-04 `vc-wld01-b`
+   came up with SSH off, the startup could not fix it ("Failed to enable SSH
+   (HTTP 400)"), and the next shutdown could not stop WCP or pause the Supervisor
+   (Phase 3/3b "SSH port not reachable"); vCenter then restarted the control plane
+   VMs and Phase 19c had to power them off. SSH was enabled with
+   `{"enabled": true}` (HTTP 204). The bash-shell call (`access/shell`) also returns
+   HTTP 500 on all three vCenters; harmless here because root's shell is already bash.
 
 ## Notes for deployment
 

@@ -1,5 +1,7 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.2 - 2026-11-04
+# Version 1.3 - 2026-11-04
+#   1.3: Task 0 makes sure SSH is enabled on all vCenters (the core vSphere.py
+#        call sends a body vCenter 8.0 U3 rejects with HTTP 400).
 #   1.2: Task 2b starts the Aria Automation services (deploy.sh) after a clean
 #        shutdown by the lab's Shutdown/Shutdown.py wrapper.
 #   1.1: standalone runs load config.ini, as the core modules do.
@@ -22,6 +24,11 @@
 # Supervisor) and vravms (graceful Aria Automation shutdown in Phase 1b).
 # This override lets config.ini carry those keys while startup only does:
 #
+#   Task 0  vCenter SSH ([RESOURCES] vCenters): enable SSH through the
+#           appliance API where it is off. The shutdown's Phase 3/3b log in to
+#           the Supervisor vCenter over SSH to stop WCP and pause clusters; the
+#           core vSphere.py tries to enable SSH but sends the body "true", which
+#           vCenter 8.0 U3 rejects (HTTP 400). Never fails the lab.
 #   Task 1  Supervisor (tanzucontrol): make sure WCP is running on the
 #           Supervisor vCenter and wait until the Supervisor reports
 #           RUNNING / READY. The control plane VMs are started by vCenter
@@ -35,6 +42,7 @@
 #   Task 3  Aria Automation URLs (vraurls): wait for the UI to answer.
 #
 # Optional [VCFFINAL] keys read by this override:
+#   vcenter_ssh          (default true)  Task 0 on/off
 #   tanzu_wait_minutes   (default 20)    Supervisor readiness wait
 #   tanzu_required       (default false) fail the lab if not ready in time
 #   vra_start_hosts      (none)          appliances to run deploy.sh on
@@ -102,8 +110,7 @@ def _sso_users(lsf):
 
 def _vc_api(lsf, vc, user, calls):
     """Open a vCenter REST session, run calls(requests, base_url, headers), close the session.
-    Uses the REST API instead of SSH: root on these 8.0 U3 appliances logs in to
-    the appliance shell, where vmon-cli is not available."""
+    Uses the REST API instead of SSH, so these tasks work whatever root's login shell is."""
     import requests
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -144,6 +151,36 @@ def _ensure_wcp(lsf, vc, user):
             state = rq.get(f'{base}/vcenter/services/wcp', headers=h, verify=False, timeout=30).json().get('state')
         return state
     return _vc_api(lsf, vc, user, calls)
+
+
+def task_vcenter_ssh(lsf, db, ts, dry_run):
+    """Enable SSH on every [RESOURCES] vCenter where it is off. Never fails the lab."""
+    if not _bool(lsf, 'vcenter_ssh', True):
+        lsf.write_output('vcenter_ssh = false - not checking vCenter SSH')
+        return True
+    vcs = []
+    for line in lsf.get_config_list('RESOURCES', 'vCenters'):
+        parts = line.split(':')
+        vcs.append((parts[0].strip(), parts[2].strip() if len(parts) >= 3 else 'administrator@vsphere.local'))
+    if dry_run:
+        lsf.write_output(f'Would make sure SSH is enabled on {[v for v, _ in vcs]}')
+        return True
+
+    def calls(rq, base, h):
+        s = rq.get(f'{base}/appliance/access/ssh', headers=h, verify=False, timeout=30)
+        if s.status_code != 200:
+            return f'could not read the SSH setting (HTTP {s.status_code})'
+        if s.json() is True:
+            return 'already enabled'
+        p = rq.put(f'{base}/appliance/access/ssh', headers=h, json={'enabled': True}, verify=False, timeout=30)
+        if p.status_code not in (200, 204):
+            return f'WARNING - could not enable SSH (HTTP {p.status_code})'
+        return 'enabled' if rq.get(f'{base}/appliance/access/ssh', headers=h, verify=False,
+                                   timeout=30).json() is True else 'WARNING - still disabled after enabling'
+
+    for vc, user in vcs:
+        lsf.write_output(f'vCenter SSH on {vc}: {_vc_api(lsf, vc, user, calls) or "WARNING - vCenter API not reachable"}')
+    return True
 
 
 def task_supervisor(lsf, db, ts, dry_run):
@@ -378,7 +415,8 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
     for t in NOT_USED:
         _set(db, ts, t, 'SKIPPED', 'Not used in ATE-2704 (vSphere 8 / VCF 5.2.1 baseline)')
     try:
-        ok = (task_supervisor(lsf, db, ts, dry_run)
+        ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
+              and task_supervisor(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
               and task_aria_services(lsf, db, ts, dry_run)
               and task_aria_urls(lsf, db, ts, dry_run))
