@@ -1,5 +1,5 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.0 - 2026-11-03
+# Version 1.1 - 2026-11-04 (standalone runs load config.ini, as the core modules do)
 #
 # Why this override exists
 # ------------------------
@@ -283,7 +283,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
         sys.path.insert(0, '/home/holuser/hol')
         import lsfunctions as lsf
         if not standalone:
-            lsf.init()
+            lsf.init(router=False)
     if not lsf.config.has_section('VCFFINAL'):
         lsf.write_output('No VCFFINAL section in config.ini - skipping VCFfinal')
         return True
@@ -325,5 +325,11 @@ if __name__ == '__main__':
     p.add_argument('--standalone', action='store_true', help='run outside labstartup')
     p.add_argument('--dry-run', action='store_true', help='show what would be done')
     p.add_argument('--force', action='store_true', help='run even if already completed this boot')
+    p.add_argument('--skip-init', action='store_true', help='skip lsf.init()')
     a = p.parse_args()
-    sys.exit(0 if main(standalone=a.standalone, dry_run=a.dry_run, force=a.force) else 1)
+    # Same as the core modules: load config.ini (lsf.init) when run directly.
+    sys.path.insert(0, '/home/holuser/hol')
+    import lsfunctions as _lsf
+    if not a.skip_init:
+        _lsf.init(router=False)
+    sys.exit(0 if main(lsf=_lsf, standalone=a.standalone, dry_run=a.dry_run, force=a.force) else 1)
