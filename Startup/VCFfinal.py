@@ -1,5 +1,8 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.1 - 2026-11-04 (standalone runs load config.ini, as the core modules do)
+# Version 1.2 - 2026-11-04
+#   1.2: Task 2b starts the Aria Automation services (deploy.sh) after a clean
+#        shutdown by the lab's Shutdown/Shutdown.py wrapper.
+#   1.1: standalone runs load config.ini, as the core modules do.
 #
 # Why this override exists
 # ------------------------
@@ -25,11 +28,17 @@
 #           (ESX Agent Manager), never powered on here.
 #   Task 2  Aria Automation (vravms): power the VMs on if they are still off
 #           (normally already started from [VCF] vcfpostedgevms).
+#   Task 2b Aria Automation services (vra_start_hosts): wait for the
+#           appliance, then start /opt/scripts/deploy.sh in the background if
+#           no services exist (after "deploy.sh --shutdown" by the shutdown
+#           wrapper). Skipped when the pods are already there.
 #   Task 3  Aria Automation URLs (vraurls): wait for the UI to answer.
 #
 # Optional [VCFFINAL] keys read by this override:
 #   tanzu_wait_minutes   (default 20)    Supervisor readiness wait
 #   tanzu_required       (default false) fail the lab if not ready in time
+#   vra_start_hosts      (none)          appliances to run deploy.sh on
+#   vra_node_wait_minutes (default 15)   wait for an appliance's Kubernetes node
 #   vraurl_wait_minutes  (default 35)    Aria Automation URL wait
 #   vraurls_required     (default true)  fail the lab if a URL never answers
 #
@@ -237,6 +246,73 @@ def task_aria_vms(lsf, db, ts, dry_run):
     return True
 
 
+def _appliance_ssh(lsf, host, command, timeout=60):
+    """Run a command as root on an appliance (sshpass, lab password). Returns (rc, output)."""
+    import subprocess
+    env = dict(os.environ, SSHPASS=lsf.get_password())
+    cmd = ['sshpass', '-e', 'ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
+           '-o', 'LogLevel=ERROR', '-o', 'PubkeyAuthentication=no', '-o', 'ConnectTimeout=15',
+           f'root@{host}', command]
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout or '') + (r.stderr or '')
+    except subprocess.TimeoutExpired:
+        return None, 'timed out'
+
+
+def task_aria_services(lsf, db, ts, dry_run):
+    """Start the Aria Automation 8.x services if they are not running.
+
+    The lab's Shutdown/Shutdown.py wrapper stops the services with
+    "deploy.sh --shutdown", which removes them; after power-on they only come
+    back when /opt/scripts/deploy.sh is run (Broadcom's documented start
+    procedure). After an unclean shutdown the pods restart by themselves, so
+    deploy.sh is only started when no pods exist in the prelude namespace.
+    deploy.sh runs in the background on the appliance; task_aria_urls then
+    waits for the UI.
+    """
+    hosts = lsf.get_config_list('VCFFINAL', 'vra_start_hosts')
+    if not hosts:
+        lsf.write_output('No vra_start_hosts configured - not starting Aria Automation services')
+        return True
+    wait_min = _int(lsf, 'vra_node_wait_minutes', 15)
+    if dry_run:
+        lsf.write_output(f'Would start Aria Automation services (deploy.sh) on {hosts} if none are running '
+                         f'(wait up to {wait_min} min for each appliance)')
+        return True
+    lsf.write_vpodprogress('Aria Automation services', 'GOOD-8')
+    for host in hosts:
+        deadline = time.time() + wait_min * 60
+        ready = False
+        while time.time() < deadline:
+            rc, out = _appliance_ssh(lsf, host, 'kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready "')
+            if rc == 0 and out.strip().isdigit() and int(out.strip()) > 0:
+                ready = True
+                break
+            lsf.write_output(f'Waiting for the Aria Automation appliance {host} (Kubernetes node)...')
+            lsf.labstartup_sleep(30)
+        if not ready:
+            lsf.write_output(f'WARNING: {host} not ready after {wait_min} min - cannot start its services')
+            continue
+        rc, out = _appliance_ssh(lsf, host, 'pgrep -f "^/bin/bash /opt/scripts/deploy.sh" >/dev/null && echo DEPLOYING; '
+                                            'kubectl get pods -n prelude --no-headers 2>/dev/null | wc -l')
+        if 'DEPLOYING' in out:
+            lsf.write_output(f'{host}: deploy.sh is already running')
+            continue
+        pods = out.strip().splitlines()[-1].strip() if out.strip() else ''
+        if pods.isdigit() and int(pods) > 0:
+            lsf.write_output(f'{host}: Aria Automation services present ({pods} pods) - not starting deploy.sh')
+            continue
+        lsf.write_output(f'{host}: no Aria Automation services running - starting /opt/scripts/deploy.sh')
+        rc, out = _appliance_ssh(lsf, host, 'nohup /opt/scripts/deploy.sh > /var/log/deploy-labstartup.out 2>&1 '
+                                            '< /dev/null & sleep 3; pgrep -f "^/bin/bash /opt/scripts/deploy.sh" >/dev/null && echo STARTED')
+        if 'STARTED' in out:
+            lsf.write_output(f'{host}: deploy.sh started (log /var/log/deploy.log on the appliance)')
+        else:
+            lsf.write_output(f'WARNING: {host}: could not start deploy.sh ({out.strip()[:200]})')
+    return True
+
+
 def task_aria_urls(lsf, db, ts, dry_run):
     specs = lsf.get_config_list('VCFFINAL', 'vraurls')
     if not specs:
@@ -304,6 +380,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
     try:
         ok = (task_supervisor(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
+              and task_aria_services(lsf, db, ts, dry_run)
               and task_aria_urls(lsf, db, ts, dry_run))
         if ok and not dry_run:
             try:

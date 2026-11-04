@@ -15,8 +15,8 @@ these overrides necessary.
 
 | File | Status | Purpose |
 |---|---|---|
-| `config.ini` | changed (v2.2) | All lab VMs, checks, `[VCFFINAL]` and `[SHUTDOWN]` settings for an 8.x / 5.2.1 baseline |
-| `Startup/VCFfinal.py` | new (v1.1) | Lab override of the core VCFfinal: only Supervisor wait, Aria Automation power-on, Aria URL wait (skips VCF 9.x-only tasks). v1.1: standalone runs load config.ini like the core modules |
+| `config.ini` | changed (v2.3) | All lab VMs, checks, `[VCFFINAL]` and `[SHUTDOWN]` settings for an 8.x / 5.2.1 baseline |
+| `Startup/VCFfinal.py` | new (v1.2) | Lab override of the core VCFfinal: only Supervisor wait, Aria Automation power-on, Aria URL wait (skips VCF 9.x-only tasks). v1.1: standalone runs load config.ini like the core modules |
 | `Shutdown/Shutdown.py` | new | Wrapper: stops Aria Automation 8.x services with `deploy.sh --shutdown`, then runs the core `~/hol/Shutdown/Shutdown.py` with the same options |
 | `SHUTDOWN.MD` | changed | Shutdown procedure for this lab |
 | `LAB-TEAM-CHANGES.md` | new | This file |
@@ -107,6 +107,42 @@ These were needed for the core shutdown to work and are part of the vPod:
 | vc-mgmt-a, vc-mgmt-b, vc-wld01-b | root login shell `/bin/appliancesh` → `/bin/bash` | Core Phase 3/3b run `vmon-cli -k wcp` and `decryptK8Pwd.py` over non-interactive SSH, which the appliance shell rejects |
 
 Undo the shell change: log in as root, `shell`, `chsh -s /bin/appliancesh root`.
+
+## First real shutdown / startup test (2026-11-04)
+
+**Shutdown** (`Shutdown/Shutdown.py` wrapper, 12:10-12:46, 33 min): `deploy.sh --shutdown`
+stopped the Aria Automation services in 181 s; all phases completed; vSAN is ESA so
+the elevator was skipped; the final audit shut down 6 vCLS VMs and `demo-002` (Aria
+test deployment); all 12 hosts off in 106 s.
+
+**Startup** failed in `services`, then was fixed and completed (Ready 14:59). Two causes:
+
+1. **Holorouter lost the Site B policy routing rules at boot.**
+   `/etc/rc.d/init.d/startup_script.sh` adds rules 901-904 (10.2.12-15.0/24 → table 20)
+   at boot, and 3 s later `systemd-networkd` starts and deletes all rules it did not
+   create (`ManageForeignRoutingPolicyRules=yes` is the default). The x-region network
+   (Aria Suite Lifecycle, vIDM, Aria Automation) and `seg-01b` were unreachable, so
+   `pings` and the required `services` check failed. Rules 901/902 date from
+   2026-10-29 (903/904 from 2026-11-03); they had been added at runtime and this
+   was the first router reboot since.
+   **Fix:** `/etc/systemd/networkd.conf.d/10-keep-lab-routing-rules.conf` with
+   `ManageForeignRoutingPolicyRules=no` (directory 755 so networkd can read it).
+   This is a holorouter image change; please carry it into the router template.
+   Unrelated pre-existing issue: `startup_script.service` always ends "failed"
+   because of six generated lines `ip link add ... eth1.Routed type vlan id Routed`
+   (no VLAN ID / address). Harmless, but it hides real failures.
+
+2. **Aria Automation services do not start by themselves after `deploy.sh --shutdown`.**
+   That command removes the services; Broadcom's start procedure is to run
+   `/opt/scripts/deploy.sh` after power-on (20-40 min). After a plain guest shutdown
+   they restart on their own, so this follows from the shutdown wrapper.
+   **Fix:** `Startup/VCFfinal.py` v1.2 adds Task 2b: wait for the appliance's Kubernetes
+   node, then start `deploy.sh` in the background if no pods exist in `prelude`
+   (skipped if pods exist or deploy.sh is already running). `config.ini` v2.3 adds
+   `[VCFFINAL] vra_start_hosts` / `vra_node_wait_minutes`, removes `auto-01b:443` from
+   `TCPServices` (closed until deploy.sh finishes) and raises `vraurl_wait_minutes`
+   to 60. In this test deploy.sh had already been started by hand, so Task 2b took
+   its "already running" branch; the "start it" branch runs on the next full boot.
 
 ## Requests for the core team
 
