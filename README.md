@@ -17,6 +17,8 @@ ATE-2704/
 │   ├── allowlist           # Additional allowed domains
 │   ├── iptablescfg.sh      # Custom firewall rules (optional)
 │   └── startlist           # Startup-only allowed domains
+├── console/                # Console desktop overrides (copied after the core files)
+│   └── VMware.config       # Lab Status panel position
 ├── Startup/                # Startup module overrides
 │   ├── prelim.py           # Override core prelim module (optional)
 │   └── VCFfinal.py         # Override core VCFfinal module (optional)

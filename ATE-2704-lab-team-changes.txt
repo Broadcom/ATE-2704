@@ -57,6 +57,15 @@ Core:     HOLFY27-MGR-HOLUSER commit 5be280a on the Manager
       full shutdown or when Phase 1/1b is selected. If it fails or times out
       it is logged and the core shutdown still runs. Log: ~/hol/shutdown-aria.log
 
+  console/VMware.config  NEW (2026-11-07)
+      Lab Status panel (conky) settings for the console desktop. Startup
+      (labstartup.sh push_console_files_nfs) copies the core
+      hol/console/VMware.config first and then this lab's console/ files,
+      so this one wins. It is the core file with only the position changed:
+      alignment top_left, gap_x 280, gap_y 275 (under the "LAB CONSOLE" title
+      on the lab wallpaper, at 1440x900). If the core file changes, copy the
+      new core file here and set those three values again.
+
   SHUTDOWN.MD            CHANGED   Shutdown procedure for this lab.
   LAB-TEAM-CHANGES.md    NEW       Markdown version of this document.
 

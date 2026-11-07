@@ -19,6 +19,7 @@ these overrides necessary.
 | `Startup/VCFfinal.py` | new (v1.3) | Lab override of the core VCFfinal: only Supervisor wait, Aria Automation power-on, Aria URL wait (skips VCF 9.x-only tasks). v1.1: standalone runs load config.ini like the core modules |
 | `Shutdown/Shutdown.py` | new | Wrapper: stops Aria Automation 8.x services with `deploy.sh --shutdown`, then runs the core `~/hol/Shutdown/Shutdown.py` with the same options |
 | `SHUTDOWN.MD` | changed | Shutdown procedure for this lab |
+| `console/VMware.config` | new | Lab Status panel (conky) settings. Startup copies it to the console after the core `hol/console/VMware.config`, so it wins. Same as the core file except the position: `top_left`, `gap_x` 280, `gap_y` 275, under the "LAB CONSOLE" title on the lab wallpaper |
 | `LAB-TEAM-CHANGES.md` | new | This file |
 
 ### config.ini keys used by the shutdown
