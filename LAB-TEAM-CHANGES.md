@@ -195,3 +195,46 @@ test deployment); all 12 hosts off in 106 s.
 - A staging copy of this repo's wrapper, VCFfinal override and config is at
   `~/ate2704/` on the Manager until the vPod repo is deployed from git; it
   can be deleted then.
+
+## Site B workload domain: Supervisor Services, VKS and sample app (2026-11-10)
+
+### What is in the template now
+
+| Item | Detail |
+|---|---|
+| vc-wld01-b / esx-05b-08b | vCenter 8.0 U3i (25197330), ESX 8.0 U3i (25205845) |
+| Supervisor (domain-c9) | v1.32.9, VKS 3.4.2, Velero 1.8.0; API 10.2.15.2 |
+| Offline libraries | Served by `supervisor-library.service` on offlinedepot:8080 (`/depot/supervisor`). VKS library `f56f762e…` is the Supervisor default (9 Kubernetes releases, all cached). The Supervisor image library `b3b34db0…` is unused on 8.0 U3 (kept for 9.x) |
+| Supervisor Services | Contour 1.33.5 (Envoy LB 10.2.15.3), Harbor 2.15.2 (`https://harbor.site-b.vcf.lab`, admin / lab password, values in `~/Lab Files/harbor-data-values-site-b.yml`), Local Consumption Interface 9.1.3, Argo CD Service 1.3.0. The legacy (8.0 U3) YAMLs are used; the VCF 9.x ones are in `~/DeploymentMedia` for later |
+| Namespace `vks-demo` | VKS cluster `vks-01` (v1.32.10, class builtin-generic-v3.4.0, 1 CP + 2 workers best-effort-small, trusts the Harbor CA); Argo CD instance `argocd-01` 3.4.9 (`https://argocd.site-b.vcf.lab`, admin / lab password) |
+| Harbor project `voting` | Docker example voting app images (vote/result `before`+`after`, worker, redis 7.2/7.4-alpine, postgres 15-alpine), copied from Docker Hub by Harbor replication |
+| Gitea | `http://offlinedepot.site-a.vcf.lab:3000/holadmin/voting-app`, `gitea.service` on the offline depot |
+| Voting app | Argo CD app `vks-demo/voting-app`, auto-sync from Gitea `k8s/`, namespace `voting` on vks-01; `http://vote.site-b.vcf.lab` (10.2.15.6), `http://result.site-b.vcf.lab` (10.2.15.7) |
+| DNS (holorouter) | harbor, vks-01, argocd, vote, result in site-b.vcf.lab (A + PTR) |
+
+Upgrade exercises this leaves room for: VKS 3.4 -> 3.6 and the cluster 1.32 -> 1.33;
+Argo CD 3.4.9 -> 3.5.3; the app from `before` to `after` images (and redis 7.2 -> 7.4)
+by a commit to Gitea.
+
+### Startup / config changes
+
+- `config.ini` v2.5: Gitea (3000) and the library (8080) in `TCPServices`, Gitea in
+  `URLS`; `[VPOD] new-dns-records` for the five names above; `[VCFFINAL]`
+  `vks_unpause`, `supervisor_services`, `k8s_urls`, `k8s_wait_minutes` (30),
+  `k8s_required` (false).
+- `Startup/VCFfinal.py` v1.4:
+  - **Task 1b** un-pauses VKS clusters. The core shutdown Phase 3b sets
+    `spec.paused: true` on every Cluster and nothing in the core startup clears it
+    (the core's own comment says so), which would leave CAPI frozen: no node
+    remediation and no cluster upgrade.
+  - **Task 4** waits for the four Supervisor Services to be CONFIGURED.
+  - **Task 5** checks Harbor, Argo CD, the vks-01 API (`/livez`) and the vote/result
+    pages. It runs after the Aria Automation wait.
+  - Tasks 4/5 only warn unless `k8s_required = true`.
+- Tested on 2026-11-10 against the live lab with vks-01 paused by hand: un-paused,
+  all 4 services CONFIGURED, all 5 URLs OK; `--dry-run` of the whole override OK.
+
+### Request for the core team
+
+7. **Add a VKS un-pause step to the core startup** (VCFfinal or Kubernetes.py), to
+   match the pause in VCFshutdown.py Phase 3b. This lab does it in its override.

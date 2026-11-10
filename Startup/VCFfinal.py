@@ -1,5 +1,9 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.3 - 2026-11-04
+# Version 1.4 - 2026-11-10
+#   1.4: Task 1b un-pauses the VKS clusters the core shutdown paused (Phase 3b
+#        sets spec.paused and nothing in the core startup clears it).
+#        Task 4 checks the Supervisor Services (Contour, Harbor, LCI, Argo CD)
+#        and Task 5 the Kubernetes URLs (Harbor, Argo CD, VKS API, voting app).
 #   1.3: Task 0 makes sure SSH is enabled on all vCenters (the core vSphere.py
 #        call sends a body vCenter 8.0 U3 rejects with HTTP 400).
 #   1.2: Task 2b starts the Aria Automation services (deploy.sh) after a clean
@@ -40,6 +44,15 @@
 #           no services exist (after "deploy.sh --shutdown" by the shutdown
 #           wrapper). Skipped when the pods are already there.
 #   Task 3  Aria Automation URLs (vraurls): wait for the UI to answer.
+#   Task 1b VKS clusters (vks_unpause): after the Supervisor is ready, read the
+#           control plane credentials on the Supervisor vCenter
+#           (decryptK8Pwd.py over SSH) and set spec.paused=false on every
+#           Cluster the shutdown paused. Never fails the lab.
+#   Task 4  Supervisor Services (supervisor_services): wait until each listed
+#           service reports CONFIGURED on the Supervisor.
+#   Task 5  Kubernetes URLs (k8s_urls, "url,expected text"): Harbor, Argo CD,
+#           the VKS cluster API and the sample app. Runs last, so most of its
+#           wait overlaps the Aria Automation wait.
 #
 # Optional [VCFFINAL] keys read by this override:
 #   vcenter_ssh          (default true)  Task 0 on/off
@@ -49,6 +62,11 @@
 #   vra_node_wait_minutes (default 15)   wait for an appliance's Kubernetes node
 #   vraurl_wait_minutes  (default 35)    Aria Automation URL wait
 #   vraurls_required     (default true)  fail the lab if a URL never answers
+#   vks_unpause          (default true)  Task 1b on/off
+#   supervisor_services  (none)          service IDs that must be CONFIGURED
+#   k8s_urls             (none)          url,expected text
+#   k8s_wait_minutes     (default 30)    wait for Tasks 4 and 5
+#   k8s_required         (default false) fail the lab if Task 4 or 5 is not ready
 #
 # Remove this file (and revisit config.ini) once the lab is on VCF 9.x and the
 # core VCFfinal tasks apply.
@@ -58,7 +76,7 @@ import sys
 import time
 
 MODULE_NAME = 'VCFfinal'
-MODULE_DESCRIPTION = 'ATE-2704 final tasks (Supervisor, Aria Automation 8)'
+MODULE_DESCRIPTION = 'ATE-2704 final tasks (Supervisor, VKS, Supervisor Services, Aria Automation 8)'
 LOCK_FILE = '/tmp/VCFfinal.lock'
 DONE_FILE = '/tmp/VCFfinal.done'
 
@@ -247,6 +265,141 @@ def task_supervisor(lsf, db, ts, dry_run):
     return True
 
 
+def _tanzu_vcenters(lsf):
+    vcs = []
+    for e in lsf.get_config_list('VCFFINAL', 'tanzucontrol'):
+        parts = e.split(':')
+        if len(parts) > 1 and parts[1].strip() and parts[1].strip() not in vcs:
+            vcs.append(parts[1].strip())
+    return vcs
+
+
+def task_vks_unpause(lsf, db, ts, dry_run):
+    """Un-pause the VKS clusters that the core shutdown paused. Never fails the lab.
+
+    The core shutdown (VCFshutdown.py Phase 3b) sets spec.paused=true on every
+    Cluster so CAPI does not power worker VMs back on while they shut down. The
+    core startup never clears it, and a paused cluster gets no node remediation
+    and cannot be upgraded. This runs after the Supervisor is ready.
+    """
+    import json
+    if not _bool(lsf, 'vks_unpause', True):
+        lsf.write_output('vks_unpause = false - not checking VKS clusters')
+        return True
+    vcs = _tanzu_vcenters(lsf)
+    if not vcs:
+        return True
+    if dry_run:
+        lsf.write_output(f'Would un-pause any paused VKS clusters on the Supervisor of {vcs}')
+        return True
+    lsf.write_vpodprogress('VKS clusters', 'GOOD-3')
+    for vc in vcs:
+        rc, out = _appliance_ssh(lsf, vc, 'python3 /usr/lib/vmware-wcp/decryptK8Pwd.py')
+        ip = pw = None
+        for line in (out or '').splitlines():
+            if line.startswith('IP:'):
+                ip = line.split(':', 1)[1].strip()
+            elif line.startswith('PWD:'):
+                pw = line.split(':', 1)[1].strip()
+        if not ip or not pw:
+            lsf.write_output(f'WARNING: could not read the Supervisor credentials on {vc} - VKS clusters not checked')
+            continue
+        rc, out = _appliance_ssh(lsf, ip, 'kubectl get clusters.cluster.x-k8s.io -A -o json', timeout=90, password=pw)
+        try:
+            items = json.loads(out[out.find('{'):]).get('items', [])
+        except ValueError:
+            lsf.write_output(f'WARNING: could not list VKS clusters on {vc} ({(out or "").strip()[:200]})')
+            continue
+        if not items:
+            lsf.write_output(f'No VKS clusters on the Supervisor of {vc}')
+        for c in items:
+            ns, name = c['metadata']['namespace'], c['metadata']['name']
+            if not c.get('spec', {}).get('paused'):
+                lsf.write_output(f'VKS cluster {ns}/{name} is not paused')
+                continue
+            rc, out = _appliance_ssh(lsf, ip, f"kubectl patch clusters.cluster.x-k8s.io {name} -n {ns} --type merge "
+                                              f"-p '{{\"spec\":{{\"paused\":false}}}}'", timeout=60, password=pw)
+            lsf.write_output(f'VKS cluster {ns}/{name}: ' + ('un-paused' if rc == 0 else f'WARNING - un-pause failed ({out.strip()[:200]})'))
+    return True
+
+
+def _k8s_fail(lsf, msg):
+    required = _bool(lsf, 'k8s_required', False)
+    lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
+    if required:
+        lsf.labfail(msg)
+        return False
+    return True
+
+
+def task_supervisor_services(lsf, db, ts, dry_run):
+    wanted = lsf.get_config_list('VCFFINAL', 'supervisor_services', split_comma=True)
+    vcs = _tanzu_vcenters(lsf)
+    if not wanted or not vcs:
+        lsf.write_output('No supervisor_services configured - skipping Supervisor Service checks')
+        return True
+    wait_min = _int(lsf, 'k8s_wait_minutes', 30)
+    if dry_run:
+        lsf.write_output(f'Would wait up to {wait_min} min for Supervisor Services {wanted} on {vcs}')
+        return True
+    lsf.write_vpodprogress('Supervisor Services', 'GOOD-8')
+    users = _sso_users(lsf)
+
+    def calls(rq, base, h):
+        out = {}
+        for c in rq.get(f'{base}/vcenter/namespace-management/clusters', headers=h, verify=False, timeout=30).json():
+            for svc in wanted:
+                r = rq.get(f'{base}/vcenter/namespace-management/clusters/{c["cluster"]}/supervisor-services/{svc}',
+                           headers=h, verify=False, timeout=30)
+                out[svc] = r.json().get('config_status') if r.status_code == 200 else f'HTTP {r.status_code}'
+        return out
+
+    deadline = time.time() + wait_min * 60
+    pending = list(wanted)
+    while time.time() < deadline:
+        states = {}
+        for vc in vcs:
+            states.update(_vc_api(lsf, vc, users.get(vc, 'administrator@vsphere.local'), calls) or {})
+        pending = [s for s in wanted if states.get(s) != 'CONFIGURED']
+        if not pending:
+            lsf.write_output('Supervisor Services configured: ' + ', '.join(wanted))
+            return True
+        lsf.write_output('Waiting for Supervisor Services: ' + ', '.join(f'{s}={states.get(s)}' for s in pending))
+        lsf.labstartup_sleep(60)
+    return _k8s_fail(lsf, f'Supervisor Services not configured after {wait_min} min: ' + ', '.join(pending))
+
+
+def task_k8s_urls(lsf, db, ts, dry_run):
+    specs = lsf.get_config_list('VCFFINAL', 'k8s_urls')
+    if not specs:
+        lsf.write_output('No k8s_urls configured - skipping Kubernetes URL checks')
+        return True
+    wait_min = _int(lsf, 'k8s_wait_minutes', 30)
+    if dry_run:
+        lsf.write_output(f'Would check Kubernetes URLs {specs} (wait {wait_min} min)')
+        return True
+    lsf.write_vpodprogress('Kubernetes URLs', 'GOOD-8')
+    pending = []
+    for s in specs:
+        url, _, text = s.partition(',')
+        pending.append((url.strip(), text.strip() or None))
+    deadline = time.time() + wait_min * 60
+    while pending and time.time() < deadline:
+        still = []
+        for url, text in pending:
+            if lsf.test_url(url, expected_text=text, timeout=20):
+                lsf.write_output(f'[OK] {url}')
+            else:
+                still.append((url, text))
+        pending = still
+        if pending:
+            lsf.write_output(f'Waiting for Kubernetes URLs ({len(pending)} not answering yet)...')
+            lsf.labstartup_sleep(60)
+    if not pending:
+        return True
+    return _k8s_fail(lsf, f'Kubernetes URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending))
+
+
 def task_aria_vms(lsf, db, ts, dry_run):
     entries = lsf.get_config_list('VCFFINAL', 'vravms')
     if not entries:
@@ -283,10 +436,10 @@ def task_aria_vms(lsf, db, ts, dry_run):
     return True
 
 
-def _appliance_ssh(lsf, host, command, timeout=60):
-    """Run a command as root on an appliance (sshpass, lab password). Returns (rc, output)."""
+def _appliance_ssh(lsf, host, command, timeout=60, password=None):
+    """Run a command as root on an appliance (sshpass, lab password unless given). Returns (rc, output)."""
     import subprocess
-    env = dict(os.environ, SSHPASS=lsf.get_password())
+    env = dict(os.environ, SSHPASS=password or lsf.get_password())
     cmd = ['sshpass', '-e', 'ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
            '-o', 'LogLevel=ERROR', '-o', 'PubkeyAuthentication=no', '-o', 'ConnectTimeout=15',
            f'root@{host}', command]
@@ -417,9 +570,12 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
     try:
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
+              and task_vks_unpause(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
               and task_aria_services(lsf, db, ts, dry_run)
-              and task_aria_urls(lsf, db, ts, dry_run))
+              and task_aria_urls(lsf, db, ts, dry_run)
+              and task_supervisor_services(lsf, db, ts, dry_run)
+              and task_k8s_urls(lsf, db, ts, dry_run))
         if ok and not dry_run:
             try:
                 open(DONE_FILE, 'w').write(time.strftime('%Y-%m-%dT%H:%M:%S'))
