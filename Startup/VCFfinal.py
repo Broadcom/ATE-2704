@@ -1,5 +1,14 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.4 - 2026-11-10
+# Version 1.5 - 2026-11-11
+#   1.5: Task 1c heals the Site B Edges and waits for the x-region appliances.
+#        On fresh lab copies (.47, .54) one TEP of edge-mgmt-02b came up dead
+#        (no tunnels, router could not ARP it). The active/active T0 then
+#        dropped part of the x-region traffic, opslcm-b missed the core's 20
+#        TCP attempts and the startup failed. Task 1c checks the Edge tunnels
+#        through the NSX API and reconnects the Edge's uplink NICs if a TEP is
+#        dead (the fix that worked by hand), then waits for Aria Suite
+#        Lifecycle and Workspace ONE Access, restarting a guest that still
+#        does not answer.
 #   1.4: Task 1b un-pauses the VKS clusters the core shutdown paused (Phase 3b
 #        sets spec.paused and nothing in the core startup clears it).
 #        Task 4 checks the Supervisor Services (Contour, Harbor, LCI, Argo CD)
@@ -48,6 +57,13 @@
 #           control plane credentials on the Supervisor vCenter
 #           (decryptK8Pwd.py over SSH) and set spec.paused=false on every
 #           Cluster the shutdown paused. Never fails the lab.
+#   Task 1c x-region appliances (xregion_urls): first check the TEP tunnels of
+#           xregion_edges on xregion_nsx and reconnect the uplink NICs of an
+#           Edge with a dead TEP. Then wait for Aria Suite Lifecycle
+#           and Workspace ONE Access on the NSX x-region segment. If one is
+#           still not answering after xregion_restart_minutes, restart its
+#           guest OS once (VM from xregion_vms). Runs before the Aria
+#           Automation tasks, because deploy.sh needs Workspace ONE Access.
 #   Task 4  Supervisor Services (supervisor_services): wait until each listed
 #           service reports CONFIGURED on the Supervisor.
 #   Task 5  Kubernetes URLs (k8s_urls, "url,expected text"): Harbor, Argo CD,
@@ -67,6 +83,14 @@
 #   k8s_urls             (none)          url,expected text
 #   k8s_wait_minutes     (default 30)    wait for Tasks 4 and 5
 #   k8s_required         (default false) fail the lab if Task 4 or 5 is not ready
+#   xregion_urls         (none)          url[,expected text] for Task 1c
+#   xregion_vms          (none)          vm_name:vcenter, matched to the URL host
+#   xregion_nsx          (none)          NSX Manager for the Edge TEP check
+#   xregion_edges        (none)          Edge transport node / VM names
+#   xregion_edges_vcenter (all)          vCenter that holds the Edge VMs
+#   xregion_restart_minutes (default 10) restart a guest still down after this
+#   xregion_wait_minutes (default 30)    total wait for Task 1c
+#   xregion_required     (default true)  fail the lab if a URL never answers
 #
 # Remove this file (and revisit config.ini) once the lab is on VCF 9.x and the
 # core VCFfinal tasks apply.
@@ -76,7 +100,7 @@ import sys
 import time
 
 MODULE_NAME = 'VCFfinal'
-MODULE_DESCRIPTION = 'ATE-2704 final tasks (Supervisor, VKS, Supervisor Services, Aria Automation 8)'
+MODULE_DESCRIPTION = 'ATE-2704 final tasks (Supervisor, VKS, x-region appliances, Supervisor Services, Aria Automation 8)'
 LOCK_FILE = '/tmp/VCFfinal.lock'
 DONE_FILE = '/tmp/VCFfinal.done'
 
@@ -400,6 +424,188 @@ def task_k8s_urls(lsf, db, ts, dry_run):
     return _k8s_fail(lsf, f'Kubernetes URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending))
 
 
+def _restart_guest(lsf, vm_name):
+    """Restart a VM's guest OS through VMware Tools; reset the VM if Tools cannot do it."""
+    vms = lsf.get_vm_match(f'^{vm_name}$') or lsf.get_vm_match(vm_name)
+    if not vms:
+        lsf.write_output(f'  WARNING: no VM matches {vm_name} - cannot restart it')
+        return False
+    vm = vms[0]
+    try:
+        vm.RebootGuest()
+        lsf.write_output(f'  Restarted the guest OS of {vm.name} (VMware Tools)')
+        return True
+    except Exception as e:
+        lsf.write_output(f'  Guest restart of {vm.name} failed ({e}) - resetting the VM')
+    try:
+        vm.ResetVM_Task()
+        lsf.write_output(f'  Reset {vm.name}')
+        return True
+    except Exception as e:
+        lsf.write_output(f'  WARNING: could not reset {vm.name}: {e}')
+        return False
+
+
+def _edge_dead_teps(lsf, nsx, edges):
+    """Return {edge_name: [local TEP IPs with tunnels but none UP]} from the NSX Manager API."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    auth = ('admin', lsf.get_password())
+    bad = {}
+    try:
+        tns = requests.get(f'https://{nsx}/api/v1/transport-nodes', auth=auth, verify=False, timeout=30).json()
+        ids = {t['display_name']: t['node_id'] for t in tns.get('results', [])}
+        for e in edges:
+            if e not in ids:
+                lsf.write_output(f'  {e}: not an NSX transport node on {nsx}')
+                continue
+            tun = requests.get(f'https://{nsx}/api/v1/transport-nodes/{ids[e]}/tunnels', auth=auth,
+                               verify=False, timeout=30).json().get('tunnels', [])
+            per_ip = {}
+            for t in tun:
+                per_ip.setdefault(t.get('local_ip'), []).append(t.get('status'))
+            dead = [ip for ip, st in per_ip.items() if st and 'UP' not in st]
+            lsf.write_output(f'  {e}: TEPs ' + ', '.join(f'{ip} {st.count("UP")}/{len(st)} up' for ip, st in per_ip.items()))
+            if dead:
+                bad[e] = dead
+    except Exception as ex:
+        lsf.write_output(f'  NSX tunnel check on {nsx} failed: {ex}')
+    return bad
+
+
+def _bounce_nic(lsf, vm, dev):
+    """Disconnect and reconnect one VM network adapter."""
+    from pyVmomi import vim
+    for state in (False, True):
+        dev.connectable.connected = state
+        spec = vim.vm.ConfigSpec(deviceChange=[vim.vm.device.VirtualDeviceSpec(
+            operation=vim.vm.device.VirtualDeviceSpec.Operation.edit, device=dev)])
+        task = vm.ReconfigVM_Task(spec)
+        for _ in range(60):
+            if task.info.state in ('success', 'error'):
+                break
+            time.sleep(1)
+        if task.info.state != 'success':
+            lsf.write_output(f'  {vm.name}: reconfigure of {dev.deviceInfo.label} failed ({task.info.error})')
+            return False
+        time.sleep(5)
+    return True
+
+
+def task_edge_teps(lsf, dry_run):
+    """Heal an NSX Edge whose TEP has no working tunnel.
+
+    Seen on fresh copies of the template (.47, .54): one of edge-mgmt-02b's two
+    TEPs stayed unreachable (the router could not ARP it) while the Edge's
+    other TEP worked. The active/active T0 then dropped part of the x-region
+    traffic, so opslcm-b answered some clients and not others. vMotion did not
+    help; disconnecting and reconnecting the Edge's uplink NIC did. This does
+    the same, one data NIC at a time (never Network adapter 1, management),
+    stopping as soon as every TEP has an UP tunnel. Never fails the lab.
+    """
+    nsx = lsf.config.get('VCFFINAL', 'xregion_nsx', fallback='').strip()
+    edges = lsf.get_config_list('VCFFINAL', 'xregion_edges', split_comma=True)
+    if not nsx or not edges:
+        return
+    if dry_run:
+        lsf.write_output(f'Would check the TEP tunnels of {edges} on {nsx} and reconnect a dead uplink NIC')
+        return
+    lsf.write_output(f'Checking NSX Edge TEP tunnels on {nsx}...')
+    bad = _edge_dead_teps(lsf, nsx, edges)
+    if bad:
+        # Tunnels can lag right after an Edge boots: confirm before touching anything.
+        lsf.write_output(f'  Dead TEP(s) {bad} - checking again in 90 s')
+        lsf.labstartup_sleep(90)
+        bad = _edge_dead_teps(lsf, nsx, edges)
+    if not bad:
+        lsf.write_output('  All Edge TEPs have working tunnels')
+        return
+    vc = lsf.config.get('VCFFINAL', 'xregion_edges_vcenter', fallback='').strip()
+    lsf.connect_vcenters([v for v in lsf.get_config_list('RESOURCES', 'vCenters') if not vc or v.split(':')[0] == vc])
+    from pyVmomi import vim
+    for edge, dead in bad.items():
+        vms = lsf.get_vm_match(f'^{edge}$')
+        if not vms:
+            lsf.write_output(f'  WARNING: no VM named {edge} - cannot heal TEP(s) {dead}')
+            continue
+        vm = vms[0]
+        nics = [d for d in vm.config.hardware.device if isinstance(d, vim.vm.device.VirtualEthernetCard)
+                and d.connectable and d.connectable.connected and d.deviceInfo.label != 'Network adapter 1']
+        for nic in reversed(nics):
+            lsf.write_output(f'  {edge}: TEP(s) {dead} dead - reconnecting {nic.deviceInfo.label}')
+            _bounce_nic(lsf, vm, nic)
+            lsf.labstartup_sleep(45)
+            if edge not in _edge_dead_teps(lsf, nsx, [edge]):
+                lsf.write_output(f'  {edge}: all TEPs up after reconnecting {nic.deviceInfo.label}')
+                break
+        else:
+            lsf.write_output(f'  WARNING: {edge} still has a dead TEP after reconnecting its uplink NICs')
+
+
+def task_xregion(lsf, db, ts, dry_run):
+    """Wait for the x-region appliances; restart a guest that stays unreachable (once)."""
+    from urllib.parse import urlparse
+    specs = lsf.get_config_list('VCFFINAL', 'xregion_urls')
+    if not specs:
+        lsf.write_output('No xregion_urls configured - skipping x-region appliance checks')
+        return True
+    try:
+        task_edge_teps(lsf, dry_run)
+    except Exception as ex:
+        lsf.write_output(f'WARNING: Edge TEP check failed: {ex}')
+    vm_entries = lsf.get_config_list('VCFFINAL', 'xregion_vms')
+    restart_min = _int(lsf, 'xregion_restart_minutes', 10)
+    wait_min = _int(lsf, 'xregion_wait_minutes', 30)
+    required = _bool(lsf, 'xregion_required', True)
+    if dry_run:
+        lsf.write_output(f'Would wait {wait_min} min for {specs}, restarting a guest from {vm_entries} '
+                         f'still down after {restart_min} min (required={required})')
+        return True
+    lsf.write_vpodprogress('x-region appliances', 'GOOD-8')
+    pending = []
+    for s in specs:
+        url, _, text = s.partition(',')
+        pending.append((url.strip(), text.strip() or None))
+    vms = {}
+    for e in vm_entries:
+        name, _, vc = e.partition(':')
+        vms[name.strip()] = vc.strip()
+    restarted = set()
+    start = time.time()
+    while pending and time.time() - start < wait_min * 60:
+        still = []
+        for url, text in pending:
+            if lsf.test_url(url, expected_text=text, timeout=20):
+                lsf.write_output(f'[OK] {url} after {int(time.time() - start)}s')
+            else:
+                still.append((url, text))
+        pending = still
+        if not pending:
+            break
+        if time.time() - start >= restart_min * 60:
+            for url, _ in pending:
+                host = urlparse(url).hostname or ''
+                name = next((n for n in vms if host.split('.')[0] == n), None)
+                if name and name not in restarted:
+                    lsf.write_output(f'{host} still not answering after {restart_min} min - restarting {name}')
+                    vc = vms[name]
+                    vc_entries = [v for v in lsf.get_config_list('RESOURCES', 'vCenters') if not vc or v.split(':')[0] == vc]
+                    lsf.connect_vcenters(vc_entries)
+                    _restart_guest(lsf, name)
+                    restarted.add(name)
+        lsf.write_output(f'Waiting for x-region appliances ({len(pending)} URL(s) not answering yet)...')
+        lsf.labstartup_sleep(30)
+    if not pending:
+        return True
+    msg = f'x-region appliance URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending)
+    lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
+    if required:
+        lsf.labfail(msg)
+        return False
+    return True
+
+
 def task_aria_vms(lsf, db, ts, dry_run):
     entries = lsf.get_config_list('VCFFINAL', 'vravms')
     if not entries:
@@ -571,6 +777,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
               and task_vks_unpause(lsf, db, ts, dry_run)
+              and task_xregion(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
               and task_aria_services(lsf, db, ts, dry_run)
               and task_aria_urls(lsf, db, ts, dry_run)
