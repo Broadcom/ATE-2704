@@ -1,11 +1,51 @@
-# ATE-2704 - Partner Advanced Workshop - Upgrades
+# Partner Advanced Workshop: Upgrades
 
-## HOLFY27 VPodRepo Format
+## About the lab
 
-## Overview
+ATE-2704 is a two-region lab that starts on the VMware vSphere 8 and VMware
+Cloud Foundation (VCF) 5.2.1 releases, built so attendees can upgrade it to
+VCF 9.1.1. **Region A** (`site-a.vcf.lab`) is a standalone vSphere 8.0 U3
+cluster: vCenter `vc-mgmt-a` and four ESX hosts on vSAN, with a VCF Installer
+appliance ready for the upgrade. **Region B** (`site-b.vcf.lab`) has two parts:
 
-This is an initial vpodrepo structure for a VCF 9.1 Single Site lab in the
-HOLFY27 (FY2027) format.
+- A VCF 5.2.1 management domain, `mgmt-b`. It has SDDC Manager, vCenter 8.0 U3,
+  NSX 4.2.1 with an Edge cluster, and four ESX hosts on vSAN ESA. Aria Suite
+  Lifecycle 8.18, VMware Identity Manager 3.3.7 and Aria Automation 8.18.1 run
+  on it. Authentik is the identity provider.
+- A standalone vSphere 8.0 U3i workload cluster, `vc-wld01-b`, with its own
+  NSX 4.2.1 and Edges. It runs a Supervisor with Contour, Harbor, the Local
+  Consumption Interface and the Argo CD Service. A VKS cluster (`vks-01`) runs a
+  sample voting app, which Argo CD deploys from a local Gitea repository.
+
+Shared services make the lab self-contained, with no internet access needed:
+
+- An offline depot holds the VCF 9.1.1 binaries and the VKS image library.
+- Technitium DNS and a Vault certificate authority run alongside the regions.
+- Installation media is pre-staged in `~/DeploymentMedia` on the console.
+
+## Lab goals
+
+The workshop teaches partners to plan and run real-world upgrades to VCF 9.1.1
+in the order Broadcom requires, and to recognise and work around the problems
+they will meet in the field. Attendees:
+
+1. **Region A:** upgrade the vSphere 8 environment to VMware vSphere Foundation
+   (VVF) 9.1.1.
+2. **Region B management domain:** upgrade VCF 5.2.1 to 9.1.1. They deploy VCF
+   Operations, upgrade SDDC Manager, and install the new VCF management
+   services. Then they upgrade NSX, vCenter (with a Reduced Downtime Upgrade),
+   the ESX hosts and the Edges from VCF Operations.
+3. **Aria Automation:** upgrade Aria Automation 8.18.1 to VCF Automation 9.1.1.
+4. **`vc-wld01-b`:** import the existing vCenter into VCF as a workload domain.
+   Then upgrade its Supervisor, NSX, vCenter, hosts and Edges, and finally the
+   VKS cluster and its application.
+
+The lab template stays at the pre-upgrade baseline, so every class starts from
+the same point.
+
+## HOLFY27 vPodRepo format
+
+This repository uses the HOLFY27 (FY2027) vPodRepo structure.
 
 ## Directory Structure
 
