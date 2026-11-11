@@ -1,4 +1,4 @@
-# ATE-2704 - Future Lab
+# ATE-2704 - Partner Advanced Workshop - Upgrades
 
 ## HOLFY27 VPodRepo Format
 
