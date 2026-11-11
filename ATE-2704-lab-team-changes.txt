@@ -1,0 +1,326 @@
+ATE-2704 - CHANGES, STARTUP AND SHUTDOWN FOR THE LABS TEAM
+==========================================================
+
+Date:     2026-11-04
+Lab:      ATE-2704 (labtype ATE) - vSphere 8 / VCF 5.2.1 upgrade lab
+Core:     HOLFY27-MGR-HOLUSER commit 5be280a on the Manager
+          (Shutdown.py v2.8, VCFshutdown.py and lsfunctions.py as installed)
+
+
+1. SUMMARY
+----------
+
+- NO CORE FILES WERE MODIFIED. "git status" in ~/hol on the Manager is clean
+  apart from one new log file (shutdown-aria.log). A core update will not
+  overwrite anything.
+- Everything lab-specific lives in the ATE-2704 vPod repo and is driven by
+  its config.ini.
+- Two overrides are used: a Startup/VCFfinal.py override (startup) and a
+  Shutdown/Shutdown.py wrapper (shutdown). Section 7 explains why the
+  shutdown needs a wrapper and what a small core change would remove it.
+- A few environment settings were changed on the ESXi hosts and vCenters so
+  the core shutdown can SSH to them (section 6).
+
+
+2. FILES IN THE ATE-2704 REPO
+-----------------------------
+
+  config.ini             CHANGED (v2.4)
+      All lab VMs, ping/TCP/URL checks, [VCF], [VCFFINAL] and [SHUTDOWN]
+      settings for the 8.x / 5.2.1 baseline.
+      v2.1: added Workspace ONE Access (vidm-01b) and Aria Automation 8.18.1
+            (auto-01b) on the Site B x-region network; added checks.
+      v2.2: added [SHUTDOWN] vra_prep_hosts and vra_prep_timeout (read only
+            by the shutdown wrapper; the core ignores them).
+
+  Startup/VCFfinal.py    NEW (v1.3)
+      Lab override of the core VCFfinal module. The core VCFfinal runs VCF
+      9.x-only tasks whenever a [VCFFINAL] section exists (WCP tuning, VSP,
+      VCF Automation 9 remediation, NSX password policy, Vault CA). This
+      override only runs three tasks:
+        Task 1  Supervisor on vc-wld01-b: make sure WCP is running and wait
+                for RUNNING/READY (20 min, not required).
+        Task 2  Aria Automation: power on auto-01b if it is still off.
+        Task 3  Wait for https://auto-01b.site-b.vcf.lab/ (35 min, required).
+      v1.1: when run directly (--standalone) it now loads config.ini
+            (lsf.init), the same as the core modules. A normal boot was not
+            affected.
+
+  Shutdown/Shutdown.py   NEW (v1.0)
+      Wrapper around the core ~/hol/Shutdown/Shutdown.py:
+        1. SSH root@auto-01b: /opt/scripts/deploy.sh --shutdown
+           (Broadcom's supported service shutdown for Aria Automation 8.x;
+           timeout vra_prep_timeout, default 2700 s).
+        2. Runs the core Shutdown.py with the same options.
+      Accepts every core option (--dry-run, --quick, --no-hosts, --phase,
+      --phases, --help) plus --skip-aria-prep. The Aria step only runs for a
+      full shutdown or when Phase 1/1b is selected. If it fails or times out
+      it is logged and the core shutdown still runs. Log: ~/hol/shutdown-aria.log
+
+  console/VMware.config  NEW (2026-11-07)
+      Lab Status panel (conky) settings for the console desktop. Startup
+      (labstartup.sh push_console_files_nfs) copies the core
+      hol/console/VMware.config first and then this lab's console/ files,
+      so this one wins. It is the core file with only the position changed:
+      alignment top_left, gap_x 280, gap_y 275 (under the "LAB CONSOLE" title
+      on the lab wallpaper, at 1440x900). If the core file changes, copy the
+      new core file here and set those three values again.
+
+  SHUTDOWN.MD            CHANGED   Shutdown procedure for this lab.
+  LAB-TEAM-CHANGES.md    NEW       Markdown version of this document.
+
+
+3. CONFIG.INI KEYS THE SHUTDOWN DEPENDS ON
+------------------------------------------
+
+  Section / key                        Value                          Used by
+  -----------------------------------  -----------------------------  ----------------
+  [VCF] vcfpostedgevms                 opslcm-b, vidm-01b, auto-01b   core 17c (+ startup)
+  [VCFFINAL] tanzucontrol              SupervisorControlPlaneVM.*:    core 3, 3b, 3c
+                                         vc-wld01-b.site-b.vcf.lab
+  [VCFFINAL] vravms                    auto-01b:vc-mgmt-b.site-b...   core 1b
+  [SHUTDOWN] fleet_products,           (empty)                        core 1, 8-10, 13
+             vcf_ops_*_vms                                            (no VCF 9 Ops)
+  [SHUTDOWN] vcf_identity_broker_vms   vidm-01b                       core 11
+  [SHUTDOWN] vcf_ops_fleet_vms         opslcm-b                       core 12
+  [SHUTDOWN] workload_vms              user-vm-a, user-vm-b           core 4
+  [SHUTDOWN] sddc_manager_vms          sddcmanager-b                  core 16
+  [SHUTDOWN] vra_prep_hosts            auto-01b.site-b.vcf.lab        wrapper only
+  [SHUTDOWN] vra_prep_timeout          2700                           wrapper only
+
+  NSX Managers, Edges, vCenters and ESXi hosts are taken from [VCF] and
+  [RESOURCES].
+
+
+4. SHUTDOWN PROCESS FOR THIS LAB
+--------------------------------
+
+  On the Manager, as holuser:
+
+      python3 /vpodrepo/2027-labs/2704/Shutdown/Shutdown.py --dry-run   (preview)
+      python3 /vpodrepo/2027-labs/2704/Shutdown/Shutdown.py             (real run)
+
+  Do NOT run the core "python3 Shutdown/Shutdown.py" in ~/hol for this lab:
+  it skips the Aria Automation service shutdown (see 7.2).
+  Make sure /tmp/config.ini is this lab's file (vPod_SKU = ATE-2704).
+  Expect about 90 minutes in total, most of it the vSAN elevator.
+
+  Step / phase     Action                                        VMs / hosts
+  ---------------  --------------------------------------------  --------------------------
+  Pre (wrapper)    deploy.sh --shutdown over SSH                 auto-01b (services)
+                   (usually 10-20 min, max 45)
+  0 / 0b           Pre-checks; Docker host (none, skipped)       -
+  1                Fleet API (not on 5.2.1, skipped)             -
+  1b               Guest OS shutdown through vCenter             auto-01b
+  2                Connect to the three vCenters                 -
+  3 / 3b / 3c      Stop WCP, pause Supervisor clusters,          vc-wld01-b Supervisor
+                   power off control plane VMs
+  4                Workload VMs (+ discovered Supervisor VMs)    user-vm-a, user-vm-b
+  5 / 6 / 7        Workload Edges, NSX Manager, vCenter          edge-wld01-01b/02b,
+                                                                 nsx-wld01-01b, vc-wld01-b
+  11 / 12          Identity broker, Suite Lifecycle              vidm-01b, opslcm-b
+  14 / 15 / 16     Management Edges, NSX Manager, SDDC Manager   edge-mgmt-01b/02b,
+                                                                 nsx-mgmt-01b, sddcmanager-b
+  17               Management vCenters                           vc-mgmt-b, vc-mgmt-a
+  17b / 17c        Direct ESXi sessions; re-check post-Edge VMs  opslcm-b, vidm-01b, auto-01b
+                   (already off by then)
+  18 / 19 / 19c    Host advanced settings, vSAN elevator,        all 12 hosts
+                   straggler audit
+  20 / 21 / 22     Host shutdown, cleanup, wait for power off    esx-01a..04a, esx-01b..08b
+
+  Then, in this order:
+    1. Router: log in as root, run /root/shutdown.sh (before the Manager -
+       the router has an NFS mount from the Manager).
+    2. Shut down the Manager (before the console - NFS mount from the console).
+    3. Shut down the console.
+
+  Verified 2026-11-04 with a full --dry-run of the wrapper: the Aria step
+  found deploy.sh on auto-01b (Aria Automation 8.18.1 build 24282366), and
+  every core phase ran without errors. Phase 3b reached the Supervisor
+  (SCP VIP 10.2.1.188; no TKG/VKS clusters to pause).
+
+
+5. STARTUP PROCESS FOR THIS LAB
+-------------------------------
+
+  No core change. At boot labstartup.sh:
+    1. Reads vPod_SKU = ATE-2704 / labtype = ATE from the console's vPod.txt.
+    2. Clones https://github.com/Broadcom/ATE-2704.git into
+       /vpodrepo/2027-labs/2704 - branch "dev" on a Holodeck dev pod
+       (guestinfo.ovfEnv empty or containing "dev"), "main" in production.
+    3. Copies its config.ini to /tmp/config.ini.
+    4. Runs the ATE startup sequence. choose_file() picks up
+       Startup/VCFfinal.py from the vPod repo; all other modules are core.
+
+  Module          What it does for ATE-2704
+  --------------  -----------------------------------------------------------
+  prelim          Core preliminary tasks (desktop, DNS checks, firewall/proxy)
+  ESXi            Checks all 12 hosts and their ports
+  VCF             Exits maintenance mode; waits for vsan-mgmt-01a,
+                  vsan-mgmt-01b, vsan-wld01-01b; starts nsx-mgmt-01b and
+                  nsx-wld01-01b; the four Edges; then opslcm-b, vidm-01b,
+                  auto-01b (x-region network needs the Edges); then
+                  vc-mgmt-a, vc-mgmt-b, vc-wld01-b
+  vSphere         Connects to the three vCenters, checks datastores, starts
+                  sddcmanager-b, user-vm-a, user-vm-b
+  pings           21 IP addresses
+  services        15 TCP ports
+  urls            10 URLs (Aria Automation is checked later by VCFfinal)
+  (services: 14 TCP ports - auto-01b:443 is checked by VCFfinal, see 6b)
+  VCFfinal        LAB OVERRIDE - Supervisor wait, auto-01b power-on,
+                  Aria Automation URL wait (see section 2)
+  final           Core final tasks (ready status)
+
+  Verified 2026-11-04 on the dev Manager:
+    - "--standalone --dry-run" of ESXi, VCF, vSphere, pings, services, urls
+      and the VCFfinal override: all exit 0 with the expected VM/host lists.
+    - Live checks against the running lab: 21/21 pings, 15/15 TCP ports,
+      11/11 URLs (including Aria Automation) answer.
+    - prelim and final were not dry-run (desktop/firewall/ready status only).
+    - labstartup.py --dry-run was NOT used: the flag is parsed but not acted
+      on, so it would run a real startup (see 7.5).
+
+
+6. LAB ENVIRONMENT CHANGES (NOT SCRIPTS)
+----------------------------------------
+
+  These are part of the vPod and are needed for the core shutdown:
+
+  Component                          Change                       Why
+  ---------------------------------  ---------------------------  --------------------------
+  All 12 ESXi hosts                  SSH service started, policy  Core host phases use SSH
+                                     "start with host";           (sshpass, root password)
+                                     UserVars.SuppressShell-
+                                     Warning = 1
+  vc-mgmt-a                          SSH enabled (was off)        Core SSH to vCenter
+  vc-mgmt-a, vc-mgmt-b, vc-wld01-b   root login shell changed     Phases 3/3b run "vmon-cli
+                                     /bin/appliancesh ->          -k wcp" and decryptK8Pwd.py
+                                     /bin/bash                    over non-interactive SSH;
+                                                                  the appliance shell rejects
+                                                                  them
+
+  Undo the shell change on a vCenter: log in as root, type "shell", then
+  run: chsh -s /bin/appliancesh root
+
+
+6b. FIRST REAL SHUTDOWN / STARTUP TEST (2026-11-04) - FINDINGS AND FIXES
+------------------------------------------------------------------------
+
+  SHUTDOWN (wrapper, 12:10-12:46, 33 min): deploy.sh --shutdown stopped the
+  Aria Automation services in 181 s; every phase completed; vSAN is ESA so the
+  elevator was skipped; the final audit shut down 6 vCLS VMs and demo-002 (an
+  Aria test deployment); all 12 hosts were off after 106 s.
+
+  STARTUP failed in "services", was fixed, and completed (Ready at 14:59).
+  Two causes:
+
+  1. The holorouter lost the Site B policy routing rules at boot.
+     /etc/rc.d/init.d/startup_script.sh adds rules 901-904
+     (10.2.12-15.0/24 -> table 20). Three seconds later systemd-networkd starts
+     and deletes every routing rule it did not create itself (its default,
+     ManageForeignRoutingPolicyRules=yes). The x-region network (Suite
+     Lifecycle, vIDM, Aria Automation) and seg-01b became unreachable, so the
+     pings and the required services check failed. Rules 901/902 date from
+     2026-10-29 and 903/904 from 2026-11-03; both had been added at runtime and
+     this was the router's first reboot since.
+     FIX: /etc/systemd/networkd.conf.d/10-keep-lab-routing-rules.conf
+          [Network]
+          ManageForeignRoutingPolicyRules=no
+     (directory mode 755 so networkd can read it). This is a HOLOROUTER IMAGE
+     CHANGE - please carry it into the router template.
+     Pre-existing, unrelated: startup_script.service always ends "failed"
+     because of six generated lines "ip link add ... eth1.Routed type vlan id
+     Routed" (no VLAN ID or address). Harmless, but it hides real failures.
+
+  2. Aria Automation services do not start by themselves after
+     "deploy.sh --shutdown". That command removes the services; Broadcom's
+     start procedure is to run /opt/scripts/deploy.sh after power-on (20-40
+     min). After a plain guest shutdown they restart on their own, so this
+     follows from the shutdown wrapper.
+     FIX: Startup/VCFfinal.py v1.2, new Task 2b: wait for the appliance's
+     Kubernetes node, then start deploy.sh in the background if no pods exist
+     in the prelude namespace (skipped if pods exist or deploy.sh is already
+     running). config.ini v2.3: new [VCFFINAL] vra_start_hosts and
+     vra_node_wait_minutes; auto-01b:443 removed from TCPServices (the port is
+     closed until deploy.sh finishes; [VCFFINAL] vraurls checks it instead);
+     vraurl_wait_minutes 35 -> 60, and [VPOD] maxminutes 60 -> 90 (the
+     overall limit is checked in every module wait, so it also caps the
+     Aria wait).
+     In this test deploy.sh had been started by hand, so Task 2b took its
+     "already running" branch; the "start it" branch runs on the next full boot.
+
+
+6c. FOLLOW-UP CHANGES (2026-11-04, AFTER THE SECOND TEST)
+-------------------------------------------------------
+
+  - Startup/VCFfinal.py v1.3, Task 0: enables SSH on all [RESOURCES]
+    vCenters through the appliance API with {"enabled": true} where it is
+    off (works around 7.6; [VCFFINAL] vcenter_ssh = false turns it off).
+    Never fails the lab. Tested live: all three vCenters "already enabled".
+  - config.ini v2.4: demo-002 (Aria Automation demo VM, seg-01b
+    10.2.13.10) added to [RESOURCES] VMs (started by vSphere.py) and
+    [SHUTDOWN] workload_vms (Phase 4). SDDC Manager ping 10.2.1.5 removed
+    from Pings (the VM starts after the ping check; sddcmanager-b:443 in
+    TCPServices covers it).
+  - Aria Automation: Monthly Lease Policy deleted and the demo deployment's
+    lease set to Never, so demo-002 survives in pods deployed from the
+    template.
+
+
+7. REQUESTS FOR THE CORE TEAM
+-----------------------------
+
+  7.1 Shutdown overrides are never used.
+      Shutdown.py loads VCFshutdown.py from its own folder and nothing calls
+      choose_file('Shutdown', ...), so a Shutdown/ folder in a vPod repo or
+      labtype folder is ignored. That is why this lab needs a wrapper run by
+      its full path. A small hook in Shutdown.py, for example "run
+      <vpodrepo>/Shutdown/pre-shutdown.py if it exists", would let labs drop
+      the wrapper.
+
+  7.2 Phase 1b assumes VCF 9.x Automation.
+      The Kubernetes clean-up uses fixed addresses 10.1.1.69-74 and
+      vmware-system-user, then a guest shutdown with a 300 s limit before a
+      hard power off. For Aria Automation 8.x ([VCFFINAL] vravms) it should
+      run /opt/scripts/deploy.sh --shutdown as root first and allow a longer
+      wait.
+
+  7.3 Phase 1 only probes Region A (ops-a, opslcm-a).
+      A config key for the Fleet / Suite Lifecycle FQDN would let Site B and
+      5.x labs use it.
+
+  7.4 Please keep these working as they do now:
+      [VCFFINAL] tanzucontrol and vravms, and the [SHUTDOWN] keys in section 3.
+
+  7.5 labstartup.py --dry-run is accepted but ignored.
+      It should either be honoured or removed, so nobody starts a lab by
+      accident while testing.
+
+  7.6 vSphere.py cannot enable vCenter SSH on vCenter 8.0 U3.
+      It sends PUT /api/appliance/access/ssh with the body "true"
+      (json=True). vCenter 8.0 U3 answers HTTP 400; it expects
+      {"enabled": true}. On 2026-11-04 vc-wld01-b came up with SSH off, the
+      startup could not fix it ("Failed to enable SSH (HTTP 400)"), and the
+      next shutdown could not stop WCP or pause the Supervisor (Phase 3/3b
+      "SSH port not reachable"); vCenter then restarted the control plane VMs
+      and Phase 19c had to power them off. SSH was then enabled with
+      {"enabled": true} (HTTP 204). The bash-shell call (access/shell) also
+      returns HTTP 500 on all three vCenters; harmless here because root's
+      shell is already bash.
+
+
+8. DEPLOYMENT NOTES / OPEN ITEMS
+--------------------------------
+
+  - GitHub Broadcom/ATE-2704: branch "dev" = commit e6b92e7 (config.ini v2.1
+    + VCFfinal v1.0). Branch "main" still has the February v1.1 config for a
+    different layout (auto-a in Region A) and no override.
+  - Still to commit and push: config.ini v2.2, Startup/VCFfinal.py v1.1,
+    Shutdown/Shutdown.py, SHUTDOWN.MD, LAB-TEAM-CHANGES.md and this file.
+    Merge to "main" before production use.
+  - The core reads /tmp/config.ini. On the dev Manager this was a stale copy
+    from VCF-91C4SB; it was replaced with this repo's config.ini (backup:
+    /tmp/config.ini.VCF-91C4SB.bak). Once the vPod repo is ATE-2704,
+    labstartup.sh copies the right file automatically.
+  - Staging copies of the wrapper, VCFfinal override and config are in
+    ~/ate2704/ on the Manager. Delete them once the lab boots from the repo.
