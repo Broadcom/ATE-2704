@@ -1,5 +1,10 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.7 - 2026-11-15
+# Version 1.8 - 2026-11-15
+#   1.8: Task 3a retries the Fleet start for up to 15 minutes when Fleet answers
+#        with a server error. On the second cold-start test Fleet's login worked
+#        a minute after the management runtime recovered, but its Fleet Build
+#        service was not ready yet ("Internal Server Error for service Fleet
+#        Build", HTTP 500), so 1.7 fell straight back to a VM power-on.
 #   1.7: Task 3a starts VCF Automation 9.1 through the Region B Fleet lifecycle
 #        service (= VCF Operations > Lifecycle > VCF Automation > Power on,
 #        KB 444635) once the management services runtime is back, instead of a
@@ -927,13 +932,26 @@ def task_vcfa_fleet_start(lsf, db, ts, dry_run):
         task = last[2]
         lsf.write_output('A Fleet start workflow is already running - waiting for it')
     elif vm_off or (last and last[0] == 'SHUTDOWN_COMPONENT_WORKFLOW'):
-        try:
-            task = stg.fleet_action(token, comp.get('componentUuid') or comp.get('id'), 'start', fqdn)
-            lsf.write_output(f'"Start component VCF Automation" started through Fleet (task {task})')
-        except Exception as e:
-            lsf.write_output(f'WARNING: Fleet start failed ({e}) - powering VCF Automation on directly')
+        task, err, retry_end = None, '', min(deadline, _t.time() + 15 * 60)
+        while task is None:
+            try:
+                task = stg.fleet_action(token, comp.get('componentUuid') or comp.get('id'), 'start', fqdn)
+            except Exception as e:
+                err = str(e)
+                # Fleet services come up one by one after the runtime recovers; retry server errors.
+                if 'HTTP 5' not in err or _t.time() >= retry_end:
+                    break
+                lsf.write_output(f'Fleet not ready to start VCF Automation yet ({err[:120]}) - retrying in 60 s')
+                lsf.labstartup_sleep(60)
+                try:
+                    token = stg.fleet_token(lsf, fqdn, node)
+                except Exception:
+                    pass
+        if task is None:
+            lsf.write_output(f'WARNING: Fleet start failed ({err[:300]}) - powering VCF Automation on directly')
             _vcfa_vm_power_on(lsf)
             return True
+        lsf.write_output(f'"Start component VCF Automation" started through Fleet (task {task})')
     else:
         lsf.write_output('VCF Automation is running according to Fleet - nothing to start')
         return True
