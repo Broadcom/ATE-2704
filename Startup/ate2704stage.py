@@ -1,5 +1,7 @@
 # ate2704stage.py - ATE-2704 upgrade-stage detection and config overlay
-# Version 1.1 - 2026-11-15
+# Version 1.2 - 2026-11-15
+#   1.2: fleet_component() reads the fleet-lcm 'components' list (1.1 expected
+#        'elements' and failed with "'str' object has no attribute 'get'").
 #   1.1: VCF Automation 9.1 is started and stopped only through the Region B
 #        Fleet lifecycle service (fleet_* helpers below), not at VM level: a
 #        VM-level power-on is undone by an unfinished Fleet shutdown workflow
@@ -319,8 +321,12 @@ def fleet_component(token, ctype='VCFA', fleet_fqdn=FLEET_FQDN):
     r = _fleet('GET', '/fleet-lcm/v1/components', token, fleet_fqdn)
     r.raise_for_status()
     body = r.json()
-    for c in (body.get('elements', body) if isinstance(body, dict) else body):
-        if (c.get('componentType') or '').upper() == ctype:
+    # Same shapes as the core fleet.get_components_fleet_lcm(): a list, or a dict with
+    # 'components' (fleet-lcm) / 'content' / 'elements'.
+    if isinstance(body, dict):
+        body = body.get('components') or body.get('content') or body.get('elements') or []
+    for c in body if isinstance(body, list) else []:
+        if isinstance(c, dict) and (c.get('componentType') or '').upper() == ctype:
             return c
     return None
 
