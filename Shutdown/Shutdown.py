@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # Shutdown.py - ATE-2704 lab-specific shutdown wrapper
-# Version 1.1 - 2026-11-15
+# Version 1.2 - 2026-11-15
+#   1.2: Waits for Fleet's "Shutdown component VCF Automation" workflow to
+#        finish (up to 45 min) before the management services runtime is
+#        stopped. In 1.1 the core helper stopped tracking it after ~2 min; the
+#        runtime was then stopped mid-workflow, and the workflow finished when
+#        the runtime came back, powering VCF Automation off after the next
+#        startup. Fleet helpers moved to Startup/ate2704stage.py.
 #   1.1: Upgrade-stage aware. Before anything else it detects which 9.1.1
 #        upgrades the lab has had (Startup/ate2704stage.py) and writes the
 #        matching settings to /tmp/config.ini (built from the original config,
@@ -149,35 +155,13 @@ def _cfg(key):
     return []
 
 
-def _fleet_jwt(fleet_fqdn, vsp_node):
-    """Token for a Fleet lifecycle service, as the core fleet.get_fleet_lcm_jwt() does for
-    Region A (that function only knows vsp-01a): read the IAM client from the
-    vcf-iam-vcfa-admin secret on the runtime's control plane, then OAuth2 password grant."""
-    import base64
-    import json
-    import re
-    import socket
-    import requests
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    pw, user = lsf.get_password(), 'vmware-system-user'
-    worker = socket.gethostbyname(vsp_node)
-    r = lsf.ssh(f"echo '{pw}' | sudo -S grep server: /etc/kubernetes/node-agent.conf", f'{user}@{worker}')
-    m = re.search(r'https?://([0-9.]+):', getattr(r, 'stdout', '') or '')
-    if not m:
-        raise ValueError(f'could not find the control plane of {vsp_node}')
-    r = lsf.ssh(f"echo '{pw}' | sudo -S -i kubectl get secret vcf-iam-vcfa-admin -n vcf-fleet-lcm "
-                f"-o jsonpath='{{.data}}' 2>/dev/null", f'{user}@{m.group(1)}')
-    raw = getattr(r, 'stdout', '') or ''
-    data = json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
-    cid = base64.b64decode(data['clientId']).decode()
-    sec = base64.b64decode(data['clientSecret']).decode()
-    t = requests.post(f'https://{fleet_fqdn}/api/v1/identity/token',
-                      data={'grant_type': 'password', 'username': 'admin', 'password': pw},
-                      headers={'Authorization': 'Basic ' + base64.b64encode(f'{cid}:{sec}'.encode()).decode()},
-                      verify=False, timeout=60)
-    t.raise_for_status()
-    return t.json()['access_token']
+def _stg():
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location('ate2704stage', os.path.join(here, '..', 'Startup', 'ate2704stage.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _runtime_script(ip, dry_run):
@@ -213,11 +197,13 @@ def vcfa_prep(dry_run):
     """Power VCF Automation 9.1 off the documented way before the core shutdown.
 
     KB 444635: VCF Operations > Build > Lifecycle > VCF Management Components >
-    VCF Automation > Power off. That runs on the Region B Fleet lifecycle service
-    (fleet-01b); the core fleet.shutdown_products_fleet_lcm() calls the same API
-    once we have a token for Region B. If it fails, VCF Automation's runtime is
-    stopped with Broadcom's runtime script instead (KB 440874). Either way the
-    core Phase 1b then shuts down any VCF Automation VM still running.
+    VCF Automation > Power off = Fleet lifecycle action=shutdown on fleet-01b.
+    Waits until Fleet reports the workflow SUCCEEDED (up to 45 min): the
+    management services runtime that runs the workflow is stopped next, and an
+    unfinished workflow would complete - and power VCF Automation off again -
+    after the next startup. If it fails, VCF Automation's runtime is stopped
+    with Broadcom's runtime script instead (KB 440874). Either way the core
+    Phase 1b then shuts down any VCF Automation VM still running.
     """
     fqdn, node, ip = _cfg('vcfa_fleet_lcm_fqdn'), _cfg('vcfa_vsp_node'), _cfg('vcfa_runtime_ip')
     log('=' * 70)
@@ -226,21 +212,26 @@ def vcfa_prep(dry_run):
     if not fqdn:
         log('VCF Automation 9.1 not deployed - skipping')
         return
-    fqdn, node = fqdn[0], (node[0] if node else 'vsp-01b.site-b.vcf.lab')
+    stg = _stg()
+    fqdn, node = fqdn[0], (node[0] if node else stg.FLEET_VSP_NODE)
     ok = False
     try:
-        sys.path.insert(0, os.path.join(HOLROOT, 'Shutdown'))
-        import fleet
-        jwt = _fleet_jwt(fqdn, node)
-        comps = fleet.get_components_fleet_lcm(fqdn, jwt)
-        if not any((c.get('componentType') or '').upper() == 'VCFA' for c in comps):
+        token = stg.fleet_token(lsf, fqdn, node)
+        comp = stg.fleet_component(token, 'VCFA', fqdn)
+        if not comp:
             log(f'{fqdn}: no VCFA component found - nothing to power off')
             return
+        cid = comp.get('componentUuid') or comp.get('id')
         if dry_run:
-            log(f'{fqdn}: token OK, VCFA component found - would power it off (fleet-lcm action=shutdown)')
+            log(f'{fqdn}: token OK, VCFA component {comp.get("fqdn")} found - would power it off '
+                f'(action=shutdown) and wait for the workflow to finish')
             return
-        ok = fleet.shutdown_products_fleet_lcm(fqdn, jwt, ['vra'], lsf=lsf, write_output=log)
-        log('VCF Automation power-off through Fleet ' + ('completed' if ok else 'did not complete'))
+        task = stg.fleet_action(token, cid, 'shutdown', fqdn)
+        log(f'{fqdn}: "Shutdown component VCF Automation" started (task {task}); waiting for it to finish')
+        status = stg.fleet_wait(lambda: stg.fleet_token(lsf, fqdn, node), task, 2700, log,
+                                lambda s: __import__('time').sleep(s), fqdn)
+        ok = status == 'SUCCEEDED'
+        log(f'VCF Automation power-off through Fleet: {status}')
     except Exception as e:
         log(f'WARNING - Fleet lifecycle power-off failed: {e}')
     if not ok and ip:

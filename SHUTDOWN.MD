@@ -38,10 +38,11 @@ VCF 9 VMs (VCF Operations, VCF services runtime, VCF Automation 9.1) and skips
 deleted ones. After the VCF Automation upgrade the `deploy.sh` step is skipped.
 Before the core shutdown, VCF Automation 9.1 is powered off the documented way
 (VCF Operations > Lifecycle > VCF Automation > Power off, KB 444635, through the
-Region B Fleet lifecycle API), then the VCF management services runtime is
+Region B Fleet lifecycle API). The wrapper waits for that workflow to finish
+(it can take 20+ minutes), then the VCF management services runtime is
 stopped with Broadcom's `vcf_services_runtime_shutdown.sh --skip-poweroff`
 (KB 440874), so it recovers by itself on the next boot (allow 15-20 minutes,
-KB 440862).
+KB 440862). The startup then starts VCF Automation again through Fleet.
 The detected stage and every setting change are at the top of
 `~/hol/shutdown-aria.log`. Preview with `--dry-run` as usual.
 

@@ -28,11 +28,20 @@ Stages and what they change (see `OVERLAY` in `ate2704stage.py`):
 |---|---|---|
 | `region_a_9` | VM `ops-a` or `license-server` exists | start `license-server` (post-Edge) and `ops-a`; wait for its UI; shut down `ops-a` in the VCF Operations phase |
 | `region_b_9` | VM `ops-01b` or `vsp-01b-*` exists | start `license-b`; the `vsp-01b` control plane node, 5 min pause, then its workers (KB 440862); `ops-01b`, `opsproxy-01b`; wait for VCF Operations and the identity broker (the runtime needs 15-20 min to recover); shutdown phases for VCF Operations, its proxy and the VSP nodes |
-| `automation_9` | VM `auto-int-b-*` exists | start `auto-int-b-*` instead of `auto-01b`; check VCF Automation 9.1; no `deploy.sh`; drop the 10.2.12.151 ping; shutdown powers VCF Automation off through Fleet first |
+| `automation_9` | VM `auto-int-b-*` exists | never start `auto-01b`; start VCF Automation 9.1 through Fleet once the management runtime is back, then check it; no `deploy.sh`; drop the 10.2.12.151 ping; shutdown powers VCF Automation off through Fleet first and waits for that to finish |
 | `wld_9` | ESX 9.x on esx-05b..08b | reported only |
 | any | VM no longer exists | removed from VM lists, and its TCP/URL and `xregion_*` checks (vIDM, Suite Lifecycle) |
 
-Tested on lab copy .54 (all upgrades done): see the test notes below this section when added.
+**Test on the fully upgraded lab copy (.54, now .26), 2026-11-15, and the fix it led to:**
+
+- Shutdown (wrapper 1.1) took 47 min and the cold start reached Ready in 24 min.
+- 4 minutes after Ready, VCF Automation 9.1 was powered off by `svc-sddclcm-vc-…`.
+  - Cause: the Fleet "Shutdown component VCF Automation" workflow was still running when the wrapper stopped the management services runtime. The core helper stops tracking it after about 2 min.
+  - When the runtime recovered, the workflow resumed, powered the VM off, and ended FAILED. The startup had powered the VM on directly and checked it before that happened.
+- Fix:
+  - `Shutdown/Shutdown.py` 1.2 waits for the Fleet workflow to end (up to 45 min) before stopping the runtime.
+  - `Startup/VCFfinal.py` 1.7 Task 3a starts VCF Automation through Fleet (`action=start`, the documented power-on, KB 444635) once the runtime is back, and only then runs the VCF Automation URL check. If Fleet cannot be reached, it falls back to a VM power-on.
+  - `Startup/ate2704stage.py` 1.1 no longer powers `auto-int-b-*` on with the post-Edge VMs, and holds the shared Fleet helpers.
 
 ## Summary
 

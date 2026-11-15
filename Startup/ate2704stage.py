@@ -1,5 +1,10 @@
 # ate2704stage.py - ATE-2704 upgrade-stage detection and config overlay
-# Version 1.0 - 2026-11-15
+# Version 1.1 - 2026-11-15
+#   1.1: VCF Automation 9.1 is started and stopped only through the Region B
+#        Fleet lifecycle service (fleet_* helpers below), not at VM level: a
+#        VM-level power-on is undone by an unfinished Fleet shutdown workflow
+#        when the management services runtime comes back (seen on the first
+#        cold-start test: VM powered off by svc-sddclcm 4 minutes after Ready).
 #
 # Why this exists
 # ---------------
@@ -90,8 +95,9 @@ OVERLAY = {
     ],
     'automation_9': [
         # Never start the old Aria Automation 8.18.1 VM: its IP is now VCF Automation's.
+        # VCF Automation 9.1 itself is started through Fleet by VCFfinal.py (KB 444635),
+        # once the management services runtime is back - not here.
         ('VCF', 'vcfpostedgevms', 'remove', ['auto-01b']),
-        ('VCF', 'vcfpostedgevms', 'add', [r'auto-int-b-.*']),
         ('RESOURCES', 'Pings', 'remove', ['10.2.12.151']),
         ('VCFFINAL', 'vravms', 'set', [f'auto-int-b-.*:{VC_B}']),
         ('VCFFINAL', 'vra_start_hosts', 'set', []),
@@ -262,6 +268,102 @@ def apply_overlay(cfg, stage, log=print):
             _store(cfg, sec, opt, new)
             changes.append(f'[{sec}] {opt}: removed checks for deleted {", ".join(missing)}')
     return changes
+
+
+# ---------------------------------------------------------------------------
+# Region B Fleet lifecycle service (VCF Operations > Lifecycle > VCF Management
+# Components; KB 444635). Used by Shutdown/Shutdown.py and Startup/VCFfinal.py.
+# ---------------------------------------------------------------------------
+FLEET_FQDN = 'fleet-01b.site-b.vcf.lab'
+FLEET_VSP_NODE = 'vsp-01b.site-b.vcf.lab'
+
+
+def fleet_token(lsf, fleet_fqdn=FLEET_FQDN, vsp_node=FLEET_VSP_NODE):
+    """Token for a Fleet lifecycle service, as the core fleet.get_fleet_lcm_jwt() does for
+    Region A (that function only knows vsp-01a): read the IAM client from the
+    vcf-iam-vcfa-admin secret on the runtime's control plane, then OAuth2 password grant."""
+    import base64
+    import re
+    import socket
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    pw, user = lsf.get_password(), 'vmware-system-user'
+    worker = socket.gethostbyname(vsp_node)
+    r = lsf.ssh(f"echo '{pw}' | sudo -S grep server: /etc/kubernetes/node-agent.conf", f'{user}@{worker}')
+    m = re.search(r'https?://([0-9.]+):', getattr(r, 'stdout', '') or '')
+    if not m:
+        raise ValueError(f'could not find the control plane of {vsp_node}')
+    r = lsf.ssh(f"echo '{pw}' | sudo -S -i kubectl get secret vcf-iam-vcfa-admin -n vcf-fleet-lcm "
+                f"-o jsonpath='{{.data}}' 2>/dev/null", f'{user}@{m.group(1)}')
+    raw = getattr(r, 'stdout', '') or ''
+    data = json.loads(raw[raw.find('{'):raw.rfind('}') + 1])
+    cid = base64.b64decode(data['clientId']).decode()
+    sec = base64.b64decode(data['clientSecret']).decode()
+    t = requests.post(f'https://{fleet_fqdn}/api/v1/identity/token',
+                      data={'grant_type': 'password', 'username': 'admin', 'password': pw},
+                      headers={'Authorization': 'Basic ' + base64.b64encode(f'{cid}:{sec}'.encode()).decode()},
+                      verify=False, timeout=60)
+    t.raise_for_status()
+    return t.json()['access_token']
+
+
+def _fleet(method, path, token, fleet_fqdn=FLEET_FQDN, **kw):
+    import requests
+    return requests.request(method, f'https://{fleet_fqdn}{path}', headers={'Authorization': 'Bearer ' + token},
+                            verify=False, timeout=60, **kw)
+
+
+def fleet_component(token, ctype='VCFA', fleet_fqdn=FLEET_FQDN):
+    """The component dict (id, fqdn, ...) of the given type, or None."""
+    r = _fleet('GET', '/fleet-lcm/v1/components', token, fleet_fqdn)
+    r.raise_for_status()
+    body = r.json()
+    for c in (body.get('elements', body) if isinstance(body, dict) else body):
+        if (c.get('componentType') or '').upper() == ctype:
+            return c
+    return None
+
+
+def fleet_last_power_workflow(token, fqdn, fleet_fqdn=FLEET_FQDN):
+    """Newest SHUTDOWN/START component workflow for fqdn: (name, status, id) or None."""
+    r = _fleet('GET', '/fleet-lcm/v1/tasks', token, fleet_fqdn, params={'limit': 50})
+    r.raise_for_status()
+    hits = [t for t in r.json().get('elements', [])
+            if t.get('name') in ('SHUTDOWN_COMPONENT_WORKFLOW', 'START_COMPONENT_WORKFLOW')
+            and ((t.get('description') or {}).get('args') or {}).get('componentFqdn') == fqdn]
+    if not hits:
+        return None
+    t = max(hits, key=lambda x: x.get('createTime') or '')
+    return t.get('name'), t.get('status'), t.get('id')
+
+
+def fleet_action(token, component_id, action, fleet_fqdn=FLEET_FQDN):
+    """POST ?action=shutdown|start. Returns the workflow task id."""
+    r = _fleet('POST', f'/fleet-lcm/v1/components/{component_id}', token, fleet_fqdn, params={'action': action})
+    if r.status_code not in (200, 202):
+        raise RuntimeError(f'{action} returned HTTP {r.status_code}: {r.text[:200]}')
+    return r.json().get('id')
+
+
+def fleet_wait(token_fn, task_id, timeout_s, log, sleep_fn, fleet_fqdn=FLEET_FQDN):
+    """Wait until a Fleet workflow ends. token_fn() returns a (fresh) token. Returns the final status."""
+    import time
+    deadline, status, token = time.time() + timeout_s, 'UNKNOWN', token_fn()
+    while time.time() < deadline:
+        try:
+            r = _fleet('GET', f'/fleet-lcm/v1/tasks/{task_id}', token, fleet_fqdn)
+            if r.status_code == 401:
+                token = token_fn()
+                continue
+            status = r.json().get('status', 'UNKNOWN')
+        except Exception as e:
+            status = f'unreachable ({e.__class__.__name__})'
+        if status in ('SUCCEEDED', 'FAILED', 'CANCELLED'):
+            return status
+        log(f'  Fleet workflow {task_id[:8]}: {status}')
+        sleep_fn(60)
+    return status
 
 
 def save(stage, changes):

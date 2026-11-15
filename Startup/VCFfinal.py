@@ -1,5 +1,12 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.6 - 2026-11-15
+# Version 1.7 - 2026-11-15
+#   1.7: Task 3a starts VCF Automation 9.1 through the Region B Fleet lifecycle
+#        service (= VCF Operations > Lifecycle > VCF Automation > Power on,
+#        KB 444635) once the management services runtime is back, instead of a
+#        VM-level power-on; Task 3 (the URL check) runs after it. On the first
+#        cold-start test the VM-level power-on was undone 4 minutes after Ready
+#        by an unfinished Fleet shutdown workflow. Falls back to a VM power-on
+#        if Fleet is not reachable.
 #   1.6: Upgrade-stage aware (Startup/ate2704stage.py, applied by Startup/VCF.py).
 #        Task S reports the stage, the wld01-b import/upgrade state and the
 #        Supervisor (version, status, services). After the VCF Automation
@@ -104,6 +111,7 @@
 #   vcf9_urls            (stage overlay) VCF 9 UIs, "url[,expected text]"
 #   vcf9_wait_minutes    (default 45)    Task 3b wait
 #   vcf9_required        (default false) fail the lab if a VCF 9 UI never answers
+#   vcfa_fleet_wait_minutes (default 60) Task 3a: wait for Fleet and the start workflow
 #
 # The core VCFfinal.py stays unused even after the upgrades: its WCP tuning,
 # NSX password-policy and Vault CA steps are not wanted in this lab. The VCF 9
@@ -710,6 +718,9 @@ def task_xregion(lsf, db, ts, dry_run):
 
 
 def task_aria_vms(lsf, db, ts, dry_run):
+    if _active('automation_9'):
+        lsf.write_output('VCF Automation 9.1 is started through Fleet (Task 3a), not at VM level')
+        return True
     entries = lsf.get_config_list('VCFFINAL', 'vravms')
     if not entries:
         lsf.write_output('No vravms configured - skipping Aria Automation VMs')
@@ -860,6 +871,82 @@ def task_aria_urls(lsf, db, ts, dry_run):
     return True
 
 
+def _vcfa_vm_power_on(lsf):
+    """Fallback: power the VCF Automation VMs on directly (vravms)."""
+    entries = lsf.get_config_list('VCFFINAL', 'vravms')
+    wanted = {e.split(':')[1].strip() for e in entries if ':' in e}
+    lsf.connect_vcenters([v for v in lsf.get_config_list('RESOURCES', 'vCenters') if v.split(':')[0] in wanted])
+    for e in entries:
+        for vm in lsf.get_vm_match(e.split(':')[0].strip()):
+            if vm.name == 'auto-01b':
+                continue
+            if lsf.is_vm_powered_on(vm):
+                lsf.write_output(f'{vm.name} already powered on')
+            else:
+                lsf.write_output(f'Powering on {vm.name} (fallback)')
+                lsf.start_vm(vm)
+
+
+def task_vcfa_fleet_start(lsf, db, ts, dry_run):
+    """Start VCF Automation 9.1 through Fleet if it is not running (KB 444635). Never fails the lab
+    by itself: Task 3 (vraurls) decides whether VCF Automation is up."""
+    if not _active('automation_9'):
+        return True
+    import time as _t
+    stg = _stage_module()
+    fqdn = (lsf.get_config_list('SHUTDOWN', 'vcfa_fleet_lcm_fqdn') or [stg.FLEET_FQDN])[0]
+    node = (lsf.get_config_list('SHUTDOWN', 'vcfa_vsp_node') or [stg.FLEET_VSP_NODE])[0]
+    wait_min = _int(lsf, 'vcfa_fleet_wait_minutes', 60)
+    if dry_run:
+        lsf.write_output(f'Would start VCF Automation through Fleet ({fqdn}) if it is stopped (wait {wait_min} min)')
+        return True
+    lsf.write_vpodprogress('VCF Automation start (Fleet)', 'GOOD-8')
+    deadline = _t.time() + wait_min * 60
+    token = comp = None
+    while _t.time() < deadline:
+        try:
+            token = stg.fleet_token(lsf, fqdn, node)
+            comp = stg.fleet_component(token, 'VCFA', fqdn)
+            break
+        except Exception as e:
+            lsf.write_output(f'Waiting for the Fleet lifecycle service ({e.__class__.__name__})...')
+            lsf.labstartup_sleep(60)
+    if not comp:
+        lsf.write_output('WARNING: Fleet not reachable or no VCFA component - powering VCF Automation on directly')
+        _vcfa_vm_power_on(lsf)
+        return True
+    last = stg.fleet_last_power_workflow(token, comp.get('fqdn'), fqdn)
+    vm_off = False
+    try:
+        lsf.connect_vcenters([v for v in lsf.get_config_list('RESOURCES', 'vCenters') if 'vc-mgmt-b' in v])
+        vm_off = any(not lsf.is_vm_powered_on(v) for v in lsf.get_vm_match('auto-int-b-.*'))
+    except Exception:
+        pass
+    lsf.write_output(f'VCF Automation in Fleet: last power workflow {last}; VM {"off" if vm_off else "on"}')
+    if last and last[0] == 'START_COMPONENT_WORKFLOW' and last[1] == 'RUNNING':
+        task = last[2]
+        lsf.write_output('A Fleet start workflow is already running - waiting for it')
+    elif vm_off or (last and last[0] == 'SHUTDOWN_COMPONENT_WORKFLOW'):
+        try:
+            task = stg.fleet_action(token, comp.get('componentUuid') or comp.get('id'), 'start', fqdn)
+            lsf.write_output(f'"Start component VCF Automation" started through Fleet (task {task})')
+        except Exception as e:
+            lsf.write_output(f'WARNING: Fleet start failed ({e}) - powering VCF Automation on directly')
+            _vcfa_vm_power_on(lsf)
+            return True
+    else:
+        lsf.write_output('VCF Automation is running according to Fleet - nothing to start')
+        return True
+    left = max(60, int(deadline - _t.time()))
+    status = stg.fleet_wait(lambda: stg.fleet_token(lsf, fqdn, node), task, left, lsf.write_output,
+                            lsf.labstartup_sleep, fqdn)
+    lsf.write_output(f'Fleet "Start component VCF Automation": {status}')
+    if status != 'SUCCEEDED':
+        lsf.write_output('WARNING: Fleet start did not succeed - making sure the VM is powered on')
+        _vcfa_vm_power_on(lsf)
+    return True
+
+
 def _auto_name():
     return 'VCF Automation' if _active('automation_9') else 'Aria Automation'
 
@@ -941,8 +1028,9 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
               and task_xregion(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
               and task_aria_services(lsf, db, ts, dry_run)
-              and task_aria_urls(lsf, db, ts, dry_run)
               and task_vcf9_urls(lsf, db, ts, dry_run)
+              and task_vcfa_fleet_start(lsf, db, ts, dry_run)
+              and task_aria_urls(lsf, db, ts, dry_run)
               and task_supervisor_services(lsf, db, ts, dry_run)
               and task_k8s_urls(lsf, db, ts, dry_run))
         if ok and not dry_run:
