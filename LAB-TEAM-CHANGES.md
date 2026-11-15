@@ -3,6 +3,37 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-15: upgrade-stage aware startup and shutdown
+
+**Problem.** `config.ini` describes the delivered lab. After attendees upgrade
+(Region A to 9.1.1, Region B to VCF 9.1.1, Aria Automation to VCF Automation
+9.1.1, wld01-b to 9.1.1), a shutdown and cold start used the old settings: the
+new VCF 9 VMs were not started, deleted vIDM / Suite Lifecycle VMs were still
+expected, and the old `auto-01b` VM would be powered on although its IP
+(10.2.12.151) now belongs to VCF Automation 9.1.
+
+**Change (no core files touched).**
+
+| File | Status | Purpose |
+|---|---|---|
+| `Startup/ate2704stage.py` | new (v1.0) | Detects the stage over direct ESXi connections (VMs that exist, ESX versions) and holds the setting changes per stage (`OVERLAY`). Run it on its own to see the result. |
+| `Startup/VCF.py` | new (v1.0) | Wrapper: detect, apply the overlay to `lsf.config` and `/tmp/config.ini` (original kept as `/tmp/config.ini.base`), then run the core `~/hol/Startup/VCF.py` unchanged. Detection failure = baseline settings. |
+| `Startup/VCFfinal.py` | changed (v1.6) | Stage report (vCenter versions, wld01-b import state from SDDC Manager, Supervisor version/status/services); Aria 8 steps skipped and old `auto-01b` never powered on after the Automation upgrade; new Task 3b waits for the VCF 9 UIs; Task 1c (x-region, from v1.5) keeps checking the Edge TEPs after vIDM / Suite Lifecycle are deleted, because VCF Automation 9.1 uses the same segment. |
+| `Shutdown/Shutdown.py` | changed (v1.1) | Detects the stage and writes the matching settings for the core shutdown. After the Automation upgrade: no `deploy.sh`; VCF Automation 9.1 is powered off the documented way through the Region B Fleet lifecycle service, `fleet-01b` (KB 444635, = VCF Operations > Lifecycle > VCF Automation > Power off; token obtained from `vsp-01b` because the core `fleet.get_fleet_lcm_jwt()` only knows `vsp-01a`), falling back to its runtime shutdown script. Then the management services runtime is stopped with Broadcom's `vcf_services_runtime_shutdown.sh --skip-poweroff` (KB 440874). The core Phase 2b would run that script too, but it powers the VMs off with `govc`, which is not installed on the Manager. |
+| `config.ini` | changed (v2.7) | Notes only; the baseline settings are unchanged. |
+
+Stages and what they change (see `OVERLAY` in `ate2704stage.py`):
+
+| Stage | Detected by | Startup / shutdown changes |
+|---|---|---|
+| `region_a_9` | VM `ops-a` or `license-server` exists | start `license-server` (post-Edge) and `ops-a`; wait for its UI; shut down `ops-a` in the VCF Operations phase |
+| `region_b_9` | VM `ops-01b` or `vsp-01b-*` exists | start `license-b`; the `vsp-01b` control plane node, 5 min pause, then its workers (KB 440862); `ops-01b`, `opsproxy-01b`; wait for VCF Operations and the identity broker (the runtime needs 15-20 min to recover); shutdown phases for VCF Operations, its proxy and the VSP nodes |
+| `automation_9` | VM `auto-int-b-*` exists | start `auto-int-b-*` instead of `auto-01b`; check VCF Automation 9.1; no `deploy.sh`; drop the 10.2.12.151 ping; shutdown powers VCF Automation off through Fleet first |
+| `wld_9` | ESX 9.x on esx-05b..08b | reported only |
+| any | VM no longer exists | removed from VM lists, and its TCP/URL and `xregion_*` checks (vIDM, Suite Lifecycle) |
+
+Tested on lab copy .54 (all upgrades done): see the test notes below this section when added.
+
 ## Summary
 
 **No core files were modified.** `git status` in `~/hol` on the Manager is clean

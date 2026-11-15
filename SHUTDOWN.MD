@@ -31,6 +31,20 @@ Logs: `~/hol/shutdown-aria.log` (Aria step) and `~/hol/shutdown.log` (core).
 The core reads `/tmp/config.ini`. Make sure it is this lab's config.ini
 (vPod_SKU = ATE-2704) before shutting down.
 
+**After the 9.1.1 upgrades (wrapper v1.1):** the wrapper first works out which
+upgrades the lab has had and writes matching settings to `/tmp/config.ini`
+(original kept as `/tmp/config.ini.base`), so the core shutdown also stops the
+VCF 9 VMs (VCF Operations, VCF services runtime, VCF Automation 9.1) and skips
+deleted ones. After the VCF Automation upgrade the `deploy.sh` step is skipped.
+Before the core shutdown, VCF Automation 9.1 is powered off the documented way
+(VCF Operations > Lifecycle > VCF Automation > Power off, KB 444635, through the
+Region B Fleet lifecycle API), then the VCF management services runtime is
+stopped with Broadcom's `vcf_services_runtime_shutdown.sh --skip-poweroff`
+(KB 440874), so it recovers by itself on the next boot (allow 15-20 minutes,
+KB 440862).
+The detected stage and every setting change are at the top of
+`~/hol/shutdown-aria.log`. Preview with `--dry-run` as usual.
+
 #### 2. Shutdown router as follows:
 
   1. On the router, login as root and run the /root/shutdown.sh script -This was written today to perform a graceful shutdown of the kubernetes stuff because the way the holorouter was given to us, it just killed things at shutdown instead of graceful.

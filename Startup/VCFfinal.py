@@ -1,5 +1,14 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.5 - 2026-11-11
+# Version 1.6 - 2026-11-15
+#   1.6: Upgrade-stage aware (Startup/ate2704stage.py, applied by Startup/VCF.py).
+#        Task S reports the stage, the wld01-b import/upgrade state and the
+#        Supervisor (version, status, services). After the VCF Automation
+#        upgrade the Aria Automation 8 steps are skipped and the old auto-01b VM
+#        is never powered on; Task 3 then checks VCF Automation 9.1. Task 3b
+#        waits for the VCF 9 UIs ([VCFFINAL] vcf9_urls, set by the stage
+#        overlay: VCF Operations, identity broker). Task 1c runs the Edge TEP
+#        check whenever xregion_edges is set, also once vIDM / Suite Lifecycle
+#        are deleted (VCF Automation 9.1 uses the same x-region segment).
 #   1.5: Task 1c heals the Site B Edges and waits for the x-region appliances.
 #        On fresh lab copies (.47, .54) one TEP of edge-mgmt-02b came up dead
 #        (no tunnels, router could not ARP it). The active/active T0 then
@@ -92,15 +101,22 @@
 #   xregion_wait_minutes (default 30)    total wait for Task 1c
 #   xregion_required     (default true)  fail the lab if a URL never answers
 #
-# Remove this file (and revisit config.ini) once the lab is on VCF 9.x and the
-# core VCFfinal tasks apply.
+#   vcf9_urls            (stage overlay) VCF 9 UIs, "url[,expected text]"
+#   vcf9_wait_minutes    (default 45)    Task 3b wait
+#   vcf9_required        (default false) fail the lab if a VCF 9 UI never answers
+#
+# The core VCFfinal.py stays unused even after the upgrades: its WCP tuning,
+# NSX password-policy and Vault CA steps are not wanted in this lab. The VCF 9
+# VMs are powered on by the core VCF.py / vSphere.py from the stage overlay.
 
 import os
 import sys
 import time
 
 MODULE_NAME = 'VCFfinal'
-MODULE_DESCRIPTION = 'ATE-2704 final tasks (Supervisor, VKS, x-region appliances, Supervisor Services, Aria Automation 8)'
+MODULE_DESCRIPTION = 'ATE-2704 final tasks (stage report, Supervisor, VKS, x-region, Supervisor Services, Automation, VCF 9 UIs)'
+HERE = os.path.dirname(os.path.abspath(__file__))
+STAGE = {}
 LOCK_FILE = '/tmp/VCFfinal.lock'
 DONE_FILE = '/tmp/VCFfinal.done'
 
@@ -139,6 +155,91 @@ def _set(db, ts, task, status, msg=''):
         db.generate_html()
     except Exception:
         pass
+
+
+def _stage_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('ate2704stage', os.path.join(HERE, 'ate2704stage.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_stage(lsf):
+    """Stage saved by Startup/VCF.py this boot, or detect it now (standalone runs)."""
+    try:
+        stg = _stage_module()
+        st = stg.load()
+        if not st:
+            # Not saved by Startup/VCF.py (standalone run): detect and adjust the settings in memory.
+            st = stg.detect(lsf)
+            st['changes'] = stg.apply_overlay(lsf.config, st, lsf.write_output)
+        return st or {}
+    except Exception as e:
+        lsf.write_output(f'Could not determine the upgrade stage ({e})')
+        return {}
+
+
+def _active(name):
+    return bool(STAGE.get('stages', {}).get(name))
+
+
+def task_stage_report(lsf, db, ts, dry_run):
+    """Report the upgrade stage, the wld01-b import/upgrade state and the Supervisor. Never fails the lab."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        lsf.write_output('ATE-2704 stage: ' + _stage_module().summary(STAGE))
+    except Exception:
+        pass
+    for c in STAGE.get('changes', []):
+        lsf.write_output('  applied: ' + c)
+    if dry_run:
+        lsf.write_output('Would report vCenter versions, the wld01-b import state and the Supervisor state')
+        return True
+    users = _sso_users(lsf)
+    # vCenter versions
+    for vc in users:
+        v = _vc_api(lsf, vc, users[vc], lambda rq, base, h: rq.get(f'{base}/appliance/system/version', headers=h,
+                                                                   verify=False, timeout=30).json())
+        if isinstance(v, dict):
+            lsf.write_output(f'{vc}: vCenter {v.get("version")} build {v.get("build")}')
+    # wld01-b import: is it a workload domain in SDDC Manager?
+    try:
+        sddc = 'sddcmanager-b.site-b.vcf.lab'
+        t = requests.post(f'https://{sddc}/v1/tokens', json={'username': 'administrator@vsphere.local',
+                          'password': lsf.get_password()}, verify=False, timeout=30)
+        if t.status_code in (200, 201):
+            h = {'Authorization': 'Bearer ' + t.json()['accessToken']}
+            doms = requests.get(f'https://{sddc}/v1/domains', headers=h, verify=False, timeout=30).json().get('elements', [])
+            names = [f'{d.get("name")} ({d.get("type")})' for d in doms]
+            vcs = requests.get(f'https://{sddc}/v1/vcenters', headers=h, verify=False, timeout=30).json().get('elements', [])
+            imported = any('wld01-b' in (v.get('fqdn') or '') for v in vcs)
+            lsf.write_output(f'SDDC Manager domains: {", ".join(names) or "none"}; '
+                             f'wld01-b {"imported as a workload domain" if imported else "not imported (standalone vCenter)"}')
+        else:
+            lsf.write_output(f'SDDC Manager API: token request returned HTTP {t.status_code}')
+    except Exception as e:
+        lsf.write_output(f'SDDC Manager API not available ({e})')
+    # Supervisor on wld01-b
+    for vc in _tanzu_vcenters(lsf):
+        def calls(rq, base, h):
+            out = []
+            for c in rq.get(f'{base}/vcenter/namespace-management/clusters', headers=h, verify=False, timeout=30).json():
+                cid = c.get('cluster')
+                sw = rq.get(f'{base}/vcenter/namespace-management/software/clusters/{cid}', headers=h, verify=False, timeout=30)
+                ver = sw.json().get('current_version') if sw.status_code == 200 else None
+                svcs = rq.get(f'{base}/vcenter/namespace-management/clusters/{cid}/supervisor-services', headers=h,
+                              verify=False, timeout=30)
+                svc_list = [f'{s.get("supervisor_service")}={s.get("current_version")}' for s in svcs.json()] \
+                    if svcs.status_code == 200 else []
+                out.append(f'Supervisor {c.get("cluster_name") or cid}: config {c.get("config_status")}, '
+                           f'kubernetes {c.get("kubernetes_status")}, version {ver}; services: {", ".join(svc_list) or "none"}')
+            return out
+        for line in (_vc_api(lsf, vc, users.get(vc, 'administrator@vsphere.local'), calls) or ['Supervisor: vCenter API not reachable']):
+            lsf.write_output(f'{vc}: {line}')
+    return True
 
 
 def _sso_users(lsf):
@@ -547,13 +648,15 @@ def task_xregion(lsf, db, ts, dry_run):
     """Wait for the x-region appliances; restart a guest that stays unreachable (once)."""
     from urllib.parse import urlparse
     specs = lsf.get_config_list('VCFFINAL', 'xregion_urls')
+    if lsf.get_config_list('VCFFINAL', 'xregion_edges'):
+        # 1.6: also when the appliances below are gone - VCF Automation 9.1 uses the same segment.
+        try:
+            task_edge_teps(lsf, dry_run)
+        except Exception as ex:
+            lsf.write_output(f'WARNING: Edge TEP check failed: {ex}')
     if not specs:
-        lsf.write_output('No xregion_urls configured - skipping x-region appliance checks')
+        lsf.write_output('No xregion_urls (appliances deleted or not configured) - skipping x-region appliance waits')
         return True
-    try:
-        task_edge_teps(lsf, dry_run)
-    except Exception as ex:
-        lsf.write_output(f'WARNING: Edge TEP check failed: {ex}')
     vm_entries = lsf.get_config_list('VCFFINAL', 'xregion_vms')
     restart_min = _int(lsf, 'xregion_restart_minutes', 10)
     wait_min = _int(lsf, 'xregion_wait_minutes', 30)
@@ -615,7 +718,7 @@ def task_aria_vms(lsf, db, ts, dry_run):
     if dry_run:
         lsf.write_output(f'Would make sure these Aria Automation VMs are powered on: {entries}')
         return True
-    lsf.write_vpodprogress('Aria Automation', 'GOOD-8')
+    lsf.write_vpodprogress('VCF Automation' if _active('automation_9') else 'Aria Automation', 'GOOD-8')
     _set(db, ts, 'vcfa_vms', 'RUNNING')
     wanted = {e.split(':')[1].strip() for e in entries if ':' in e and e.split(':')[1].strip()}
     vc_entries = [v for v in lsf.get_config_list('RESOURCES', 'vCenters') if not wanted or v.split(':')[0] in wanted]
@@ -628,6 +731,10 @@ def task_aria_vms(lsf, db, ts, dry_run):
             errors.append(f'no VM matches {pat}')
             continue
         for vm in vms:
+            if _active('automation_9') and vm.name == 'auto-01b':
+                # After the upgrade, 10.2.12.151 belongs to VCF Automation 9.1: the old VM must stay off.
+                lsf.write_output('auto-01b is the old Aria Automation 8.18.1 VM - leaving it powered off')
+                continue
             if lsf.is_vm_powered_on(vm):
                 lsf.write_output(f'{vm.name} already powered on')
             elif not lsf.start_vm(vm):
@@ -667,6 +774,9 @@ def task_aria_services(lsf, db, ts, dry_run):
     deploy.sh runs in the background on the appliance; task_aria_urls then
     waits for the UI.
     """
+    if _active('automation_9'):
+        lsf.write_output('VCF Automation 9.1 deployed - no Aria Automation 8 services (deploy.sh) to start')
+        return True
     hosts = lsf.get_config_list('VCFFINAL', 'vra_start_hosts')
     if not hosts:
         lsf.write_output('No vra_start_hosts configured - not starting Aria Automation services')
@@ -720,7 +830,7 @@ def task_aria_urls(lsf, db, ts, dry_run):
     if dry_run:
         lsf.write_output(f'Would check Aria Automation URLs {specs} (wait {wait_min} min, required={required})')
         return True
-    lsf.write_vpodprogress('Aria Automation URLs', 'GOOD-8')
+    lsf.write_vpodprogress(f'{_auto_name()} URLs', 'GOOD-8')
     _set(db, ts, 'vcfa_urls', 'RUNNING')
     pending = []
     for s in specs:
@@ -736,14 +846,60 @@ def task_aria_urls(lsf, db, ts, dry_run):
                 still.append((url, text))
         pending = still
         if pending:
-            lsf.write_output(f'Waiting for Aria Automation ({len(pending)} URL(s) not answering yet)...')
+            lsf.write_output(f'Waiting for {_auto_name()} ({len(pending)} URL(s) not answering yet)...')
             lsf.labstartup_sleep(60)
     if not pending:
         _set(db, ts, 'vcfa_urls', 'COMPLETE')
         return True
-    msg = 'Aria Automation URL(s) not answering after ' + f'{wait_min} min: ' + ', '.join(u for u, _ in pending)
+    msg = f'{_auto_name()} URL(s) not answering after ' + f'{wait_min} min: ' + ', '.join(u for u, _ in pending)
     lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
     _set(db, ts, 'vcfa_urls', 'FAILED', msg)
+    if required:
+        lsf.labfail(msg)
+        return False
+    return True
+
+
+def _auto_name():
+    return 'VCF Automation' if _active('automation_9') else 'Aria Automation'
+
+
+def task_vcf9_urls(lsf, db, ts, dry_run):
+    """Wait for the VCF 9 UIs added by the stage overlay (VCF Operations, identity broker)."""
+    specs = lsf.get_config_list('VCFFINAL', 'vcf9_urls')
+    if not specs:
+        lsf.write_output('No vcf9_urls (lab not upgraded to VCF 9) - skipping VCF 9 UI checks')
+        _set(db, ts, 'vcf_component_urls', 'SKIPPED', 'Not upgraded yet')
+        return True
+    wait_min = _int(lsf, 'vcf9_wait_minutes', 45)
+    required = _bool(lsf, 'vcf9_required', False)
+    if dry_run:
+        lsf.write_output(f'Would check VCF 9 URLs {specs} (wait {wait_min} min, required={required})')
+        return True
+    lsf.write_vpodprogress('VCF 9 components', 'GOOD-8')
+    _set(db, ts, 'vcf_component_urls', 'RUNNING')
+    pending = []
+    for s in specs:
+        url, _, text = s.partition(',')
+        pending.append((url.strip(), text.strip() or None))
+    deadline = time.time() + wait_min * 60
+    while pending and time.time() < deadline:
+        still = []
+        for url, text in pending:
+            if lsf.test_url(url, expected_text=text, timeout=20):
+                lsf.write_output(f'[OK] {url}')
+            else:
+                still.append((url, text))
+        pending = still
+        if pending:
+            lsf.write_output(f'Waiting for VCF 9 components ({len(pending)} URL(s) not answering yet)...')
+            lsf.labstartup_sleep(60)
+    if not pending:
+        _set(db, ts, 'vcf_component_urls', 'COMPLETE')
+        return True
+    msg = f'VCF 9 URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending)
+    lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
+    _set(db, ts, 'vcf_component_urls', 'FAILED', msg)
     if required:
         lsf.labfail(msg)
         return False
@@ -770,17 +926,23 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
     except OSError:
         pass
     lsf.write_output(f'Starting {MODULE_NAME} (ATE-2704 override): {MODULE_DESCRIPTION}')
+    STAGE.clear()
+    STAGE.update(_load_stage(lsf))
     db, ts = _dashboard(lsf)
     for t in NOT_USED:
-        _set(db, ts, t, 'SKIPPED', 'Not used in ATE-2704 (vSphere 8 / VCF 5.2.1 baseline)')
+        if t == 'vcf_component_urls' and lsf.get_config_list('VCFFINAL', 'vcf9_urls'):
+            continue
+        _set(db, ts, t, 'SKIPPED', 'Not used in ATE-2704')
     try:
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
+              and task_stage_report(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
               and task_vks_unpause(lsf, db, ts, dry_run)
               and task_xregion(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
               and task_aria_services(lsf, db, ts, dry_run)
               and task_aria_urls(lsf, db, ts, dry_run)
+              and task_vcf9_urls(lsf, db, ts, dry_run)
               and task_supervisor_services(lsf, db, ts, dry_run)
               and task_k8s_urls(lsf, db, ts, dry_run))
         if ok and not dry_run:
