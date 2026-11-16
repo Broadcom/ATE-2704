@@ -1,0 +1,119 @@
+{
+  "validatedAtUtc": "2026-10-29T17:44:07.671745+00:00",
+  "location": "/home/holuser/Downloads/LabScripts",
+  "checks": [
+    {
+      "Id": "01-NtpStopped",
+      "Target": "esx-04a.site-a.vcf.lab",
+      "Kind": "Ntp",
+      "Current": "{\"Policy\":\"on\",\"Running\":true}"
+    },
+    {
+      "Id": "02-WrongHostDns",
+      "Target": "esx-04a.site-a.vcf.lab",
+      "Kind": "Dns",
+      "Current": "{\"FromDhcp\":false,\"DhcpDevice\":\"\",\"Addresses\":[\"10.1.1.1\"]}"
+    },
+    {
+      "Id": "03-VmotionDisabled",
+      "Target": "esx-04a.site-a.vcf.lab",
+      "Kind": "Vmotion",
+      "Current": "{\"Name\":\"vmk2\",\"Enabled\":true}"
+    },
+    {
+      "Id": "04-DrsManual",
+      "Target": "cluster-mgmt-01a",
+      "Kind": "Drs",
+      "Current": "{\"Enabled\":true,\"Automation\":\"FullyAutomated\"}"
+    },
+    {
+      "Id": "05-VmNicDisconnected",
+      "Target": "user-vm-a",
+      "Kind": "NicDisconnected",
+      "Current": "{\"Mac\":\"00:50:56:a1:d6:5a\",\"Id\":\"VirtualMachine-vm-1003/4000\",\"StartConnected\":true,\"Connected\":true}"
+    },
+    {
+      "Id": "06-WrongVmNetwork",
+      "Target": "user-vm-b",
+      "Kind": "NicWrongPg",
+      "Current": "{\"PgKey\":\"dvportgroup-1002\",\"SwitchUuid\":\"50 21 37 c1 68 be a2 ae-4a 31 eb 34 49 b0 f4 80\",\"Network\":\"user-network-a\",\"Mac\":\"00:50:56:a1:94:c4\",\"Id\":\"VirtualMachine-vm-1004/4000\"}"
+    },
+    {
+      "Id": "07-VmCpuLimit",
+      "Target": "user-vm-a",
+      "Kind": "CpuLimit",
+      "Current": "{\"LimitMhz\":-1,\"ReservationMhz\":0}"
+    },
+    {
+      "Id": "08-LeftoverSnapshot",
+      "Target": "user-vm-b",
+      "Kind": "Snapshot",
+      "Current": "{\"ExistingIds\":[]}"
+    },
+    {
+      "Id": "09-EdgeUplinkVlanMissing",
+      "Target": "edge-uplink1-vds01-wld01-01b",
+      "Kind": "EdgeVlan",
+      "Current": "{\"Ranges\":[{\"End\":48,\"Start\":48},{\"End\":49,\"Start\":49}]}"
+    },
+    {
+      "Id": "10-WorkloadBgpDisabled",
+      "Target": "t0-wld01-b",
+      "Kind": "NsxBgp",
+      "Current": "{\"Enabled\":true}"
+    },
+    {
+      "Id": "11-NsxAdminPasswordExpired",
+      "Target": "nsx-mgmt-01b",
+      "ReadOnly": true,
+      "admin": {
+        "userid": 10000,
+        "username": "admin",
+        "status": "ACTIVE",
+        "password_reset_required": false,
+        "password_change_frequency": 90,
+        "password_change_warning": 7
+      },
+      "rootRecoveryVerified": true
+    },
+    {
+      "Id": "12-VcenterCertificateTrust",
+      "Target": "vc-mgmt-a",
+      "ReadOnly": true,
+      "certificateSha256": "cb4321fd60143d1350ab4a2ccebf8e5635c81636e62b7d3782f5d8f9dbc73833",
+      "rootBackupAccessVerified": true,
+      "nativeCertificateCmdletsAvailable": true,
+      "topology": {
+        "nodeCount": 1,
+        "linkedMode": false
+      }
+    },
+    {
+      "PowerShellFilesParsed": 30,
+      "Scenarios": 12,
+      "ReadOnly": true,
+      "FaultsExecuted": false
+    }
+  ],
+  "liveFaultCyclesExecuted": false,
+  "offlineSecurityTests": {
+    "passed": 3,
+    "failed": 0,
+    "covers": [
+      "temporary CA and leaf chain, hostname, key match and expected original-CA rejection",
+      "recovery accepts only original or exercise certificate",
+      "recovery handles a prepared but unmodified certificate"
+    ]
+  },
+  "managementNsxRetarget": {
+    "validatedAtUtc": "2026-10-29T17:50:34.441498+00:00",
+    "vcenter": "vc-mgmt-b.site-b.vcf.lab",
+    "nsxManager": "nsx-mgmt-01b.site-b.vcf.lab",
+    "ip": "10.2.1.21",
+    "scope": "VCF 5.2.1 management domain",
+    "powerShellFilesParsed": 30,
+    "allTwelvePairsWhatIfPassed": true,
+    "readOnlyTargetAndRootRecoveryVerified": true,
+    "liveFaultCyclesExecuted": false
+  }
+}

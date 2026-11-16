@@ -1,5 +1,11 @@
 # ate2704stage.py - ATE-2704 upgrade-stage detection and config overlay
-# Version 1.3 - 2026-11-16
+# Version 1.4 - 2026-11-16
+#   1.4: Region A after the VVF 9.1.1 upgrade: the VCF Installer deploys VCF
+#        Operations as ops-01a and the license server as license-a (the vSphere
+#        9.1.1 path uses ops-a and license-server). region_a_9 now detects and
+#        starts either set. vcf9_urls entries can be conditional
+#        ('?<vm>|<value>': kept only if that VM exists), so the startup waits
+#        only for the VCF Operations UI of the VM that is there.
 #   1.3: Region A after the VCF Installer (VVF 9.1.1) and after the converge to
 #        VCF 9.1.1, plus the optional NSX overlay / VPC chapter:
 #        region_a_vsp  starts the vsp-01a runtime (KB 440862 order) and stops it
@@ -40,7 +46,8 @@
 #                       the core shutdown
 #
 # Stages (independent of each other):
-#   region_a_9     Region A upgraded to VVF/VCF 9.1.1 (VMs ops-a / license-server exist)
+#   region_a_9     Region A upgraded to vSphere/VVF/VCF 9.1.1 (VMs ops-a / license-server,
+#                  or ops-01a / license-a after the VVF upgrade)
 #   region_a_vsp   Region A has the VCF services runtime (vsp-01a-* exist; VCF Installer path)
 #   region_a_vcf   Region A converged to VCF 9.1.1 (sddcmanager-a exists)
 #   region_a_vpc   test VMs moved to VPC subnets (user-vm-a/b not on user-network-a)
@@ -72,7 +79,7 @@ VC_B = 'vc-mgmt-b.site-b.vcf.lab'
 
 # Detection rules: a stage is active when any listed VM name (regex, full match) exists.
 STAGE_VMS = {
-    'region_a_9': ['ops-a', 'license-server'],
+    'region_a_9': ['ops-a', 'license-server', 'ops-01a', 'license-a'],
     'region_a_vsp': [r'vsp-01a-.*'],
     'region_a_vcf': ['sddcmanager-a'],
     'region_b_9': ['ops-01b', r'vsp-01b-.*'],
@@ -92,10 +99,13 @@ OLD_ARIA = {'opslcm-b': 'opslcm-b.site-b.vcf.lab', 'vidm-01b': 'vidm-01b.site-b.
 # substring match for TCPServices / URLS / Pings), 'set' replaces the value.
 OVERLAY = {
     'region_a_9': [
-        ('VCF', 'vcfpostedgevms', 'add', ['license-server']),
-        ('RESOURCES', 'VMs', 'add', [f'ops-a:{VC_A}', f'opsproxy-01a:{VC_A}']),
-        ('VCFFINAL', 'vcf9_urls', 'add', ['https://ops-a.site-a.vcf.lab/ui/']),
-        ('SHUTDOWN', 'vcf_ops_vms', 'add', ['ops-a']),
+        # vSphere 9.1.1 / converge path: ops-a, license-server. VVF path: ops-01a,
+        # license-a. VM list entries for VMs that do not exist are dropped below.
+        ('VCF', 'vcfpostedgevms', 'add', ['license-server', 'license-a']),
+        ('RESOURCES', 'VMs', 'add', [f'ops-a:{VC_A}', f'ops-01a:{VC_A}', f'opsproxy-01a:{VC_A}']),
+        ('VCFFINAL', 'vcf9_urls', 'add', ['?ops-a|https://ops-a.site-a.vcf.lab/ui/',
+                                           '?ops-01a|https://ops-01a.site-a.vcf.lab/ui/']),
+        ('SHUTDOWN', 'vcf_ops_vms', 'add', ['ops-a', 'ops-01a']),
         ('SHUTDOWN', 'vcf_ops_collector_vms', 'add', ['opsproxy-01a']),
     ],
     # Region A converged to VCF 9.1.1: its own NSX Manager (started by the core
@@ -265,7 +275,14 @@ def _expand(values, stage):
     Pause:300, then every worker."""
     mem = stage.get('vm_mem_mb', {})
     cps, workers, out, at = [], [], [], None
+    names = set(stage.get('vm_names', []))
     for v in values:
+        if v.startswith('?'):
+            # '?<vm>|<value>': keep <value> only if VM <vm> exists.
+            vm, _, val = v[1:].partition('|')
+            if vm in names:
+                out.append(val)
+            continue
         if not v.startswith('@'):
             out.append(v)
             continue

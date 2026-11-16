@@ -1,5 +1,7 @@
 # VCF.py - ATE-2704 wrapper around the core VCF startup module
-# Version 1.0 - 2026-11-15
+# Version 1.1 - 2026-11-16
+#   1.1: also copies the repo's lab-files/ to the console's "~/Lab Files"
+#        (Startup/ate2704labfiles.py), so script fixes need no template re-master.
 #
 # Runs right after ESXi.py, when every ESXi host answers but before any VCF
 # VM is powered on. It:
@@ -60,6 +62,17 @@ def prepare(lsf, dry_run=False):
         return None
 
 
+def lab_files(lsf, dry_run=False):
+    """Copy new or changed repo lab-files/ to the console's ~/Lab Files. Never raises."""
+    try:
+        spec = importlib.util.spec_from_file_location('ate2704labfiles', os.path.join(HERE, 'ate2704labfiles.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.run(lsf, dry_run=dry_run)
+    except Exception as e:
+        lsf.write_output(f'ATE-2704: lab files sync skipped ({e})')
+
+
 def main(lsf=None, standalone=False, dry_run=False):
     if lsf is None:
         sys.path.insert(0, '/home/holuser/hol')
@@ -67,6 +80,7 @@ def main(lsf=None, standalone=False, dry_run=False):
         if not standalone:
             lsf.init(router=False)
     prepare(lsf, dry_run=dry_run)
+    lab_files(lsf, dry_run=dry_run)
     spec = importlib.util.spec_from_file_location('core_VCF', CORE)
     core = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(core)

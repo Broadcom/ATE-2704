@@ -1,0 +1,158 @@
+{
+  "SchemaVersion": 1,
+  "CertificateFile": "Certificates/LabRootCA.crt",
+  "Vcenters": {
+    "RegionA": {
+      "Server": "vc-mgmt-a.site-a.vcf.lab",
+      "User": "administrator@vsphere.local",
+      "InstanceUuid": "9814e0d7-5d08-4c78-80a5-6ac71375adde",
+      "Cluster": "cluster-mgmt-01a"
+    },
+    "WorkloadB": {
+      "Server": "vc-wld01-b.site-b.vcf.lab",
+      "User": "administrator@wld.sso",
+      "InstanceUuid": "63a69ee9-858e-4044-8c02-477d380d4718",
+      "Cluster": "cluster-wld01-01b"
+    },
+    "ManagementB": {
+      "Server": "vc-mgmt-b.site-b.vcf.lab",
+      "User": "administrator@vsphere.local",
+      "InstanceUuid": "2459cc88-7e2d-49b9-a751-a24ffa4ff8e9",
+      "Cluster": "cluster-mgmt-01b"
+    }
+  },
+  "Nsx": {
+    "BaseUri": "https://nsx-wld01-b.site-b.vcf.lab",
+    "CertificateSha256": "2d0510107e4c903f9e5c11f6fc67d2691b4d9d5299ed3a46d27d1a58ade4a776",
+    "BgpPath": "/policy/api/v1/infra/tier-0s/t0-wld01-b/locale-services/default/bgp",
+    "ExpectedPolicyPath": "/infra/tier-0s/t0-wld01-b/locale-services/default/bgp"
+  },
+  "Scenarios": [
+    {
+      "Id": "01-NtpStopped",
+      "Kind": "Ntp",
+      "Scope": "RegionA",
+      "Target": "esx-04a.site-a.vcf.lab",
+      "Title": "ESXi NTP service stopped",
+      "Impact": "One host loses time synchronization; drift develops over time, not immediately."
+    },
+    {
+      "Id": "02-WrongHostDns",
+      "Kind": "Dns",
+      "Scope": "RegionA",
+      "Target": "esx-04a.site-a.vcf.lab",
+      "Title": "ESXi DNS points to an invalid resolver",
+      "Impact": "Hostname resolution and DNS-related readiness checks fail on one host."
+    },
+    {
+      "Id": "03-VmotionDisabled",
+      "Kind": "Vmotion",
+      "Scope": "RegionA",
+      "Target": "esx-04a.site-a.vcf.lab",
+      "Interface": "vmk2",
+      "Title": "vMotion disabled on its VMkernel interface",
+      "Impact": "Migrations involving this host and upgrade evacuation can fail."
+    },
+    {
+      "Id": "04-DrsManual",
+      "Kind": "Drs",
+      "Scope": "RegionA",
+      "Target": "cluster-mgmt-01a",
+      "Title": "DRS changed to manual",
+      "Impact": "Automatic placement and evacuation require intervention."
+    },
+    {
+      "Id": "05-VmNicDisconnected",
+      "Kind": "NicDisconnected",
+      "Scope": "RegionA",
+      "Target": "user-vm-a",
+      "VmUuid": "5021d478-e005-0b4f-4b55-02640956d081",
+      "Title": "Disposable VM NIC disconnected",
+      "Impact": "user-vm-a loses connectivity immediately and after power cycling."
+    },
+    {
+      "Id": "06-WrongVmNetwork",
+      "Kind": "NicWrongPg",
+      "Scope": "RegionA",
+      "Target": "user-vm-b",
+      "VmUuid": "5021a857-9127-2158-78fe-199f9485722c",
+      "WrongNetwork": "vmmgmt-vds01-mgmt-01a",
+      "Title": "Disposable VM attached to the wrong portgroup",
+      "Impact": "The NIC stays connected but the static guest address is on the wrong VLAN."
+    },
+    {
+      "Id": "07-VmCpuLimit",
+      "Kind": "CpuLimit",
+      "Scope": "RegionA",
+      "Target": "user-vm-a",
+      "VmUuid": "5021d478-e005-0b4f-4b55-02640956d081",
+      "Title": "Restrictive 100 MHz VM CPU limit",
+      "Impact": "Guest becomes sluggish despite apparent host CPU headroom."
+    },
+    {
+      "Id": "08-LeftoverSnapshot",
+      "Kind": "Snapshot",
+      "Scope": "RegionA",
+      "Target": "user-vm-b",
+      "VmUuid": "5021a857-9127-2158-78fe-199f9485722c",
+      "Title": "Snapshot left for pre-upgrade hygiene review",
+      "Impact": "A new disk-only snapshot appears. This is a hygiene exercise, not a universal hardware-upgrade blocker."
+    },
+    {
+      "Id": "09-EdgeUplinkVlanMissing",
+      "Kind": "EdgeVlan",
+      "Scope": "WorkloadB",
+      "Target": "edge-uplink1-vds01-wld01-01b",
+      "Switch": "vds01-wld01-01b",
+      "SwitchUuid": "50 35 50 97 da fd 65 ba-ff 7a dc 5b 21 67 78 bf",
+      "Title": "BGP uplink VLAN missing from Edge trunk",
+      "Impact": "VLAN 49 is removed from uplink 1; TEP VLAN 48 and uplink 2 remain. Expect two external BGP sessions down."
+    },
+    {
+      "Id": "10-WorkloadBgpDisabled",
+      "Kind": "NsxBgp",
+      "Scope": "NSX",
+      "Target": "t0-wld01-b",
+      "Title": "Workload Tier-0 BGP disabled",
+      "Impact": "HIGH IMPACT: all four external BGP sessions drop. Workload north-south and Supervisor load-balancer access fail. Recover through the management NSX endpoint."
+    },
+    {
+      "Id": "11-NsxAdminPasswordExpired",
+      "Kind": "NsxPassword",
+      "Backend": "Security",
+      "Scope": "ManagementB",
+      "Target": "nsx-mgmt-01b",
+      "Title": "VCF 5.2.1 management NSX admin password forced to expire",
+      "Impact": "VCF 5.2.1 NSX admin UI/API access and SDDC Manager operations using that credential can fail. Recovery uses root through vc-mgmt-b Guest Operations."
+    },
+    {
+      "Id": "12-VcenterCertificateTrust",
+      "Kind": "VcCertificate",
+      "Backend": "Security",
+      "Scope": "RegionA",
+      "Target": "vc-mgmt-a",
+      "Title": "vCenter Machine SSL certificate signed by an untrusted lab CA",
+      "Impact": "HIGH IMPACT: normal clients reject the vCenter certificate. Existing HTTPS integrations can lose connectivity. Recovery restores the original certificate/key."
+    }
+  ],
+  "SecurityTargets": {
+    "11-NsxAdminPasswordExpired": {
+      "Server": "vc-mgmt-b.site-b.vcf.lab",
+      "User": "administrator@vsphere.local",
+      "InstanceUuid": "2459cc88-7e2d-49b9-a751-a24ffa4ff8e9",
+      "Cluster": "cluster-mgmt-01b",
+      "VmName": "nsx-mgmt-01b",
+      "VmUuid": "503273c5-05cc-fc2c-b6d4-df2abacea6be",
+      "Ip": "10.2.1.21"
+    },
+    "12-VcenterCertificateTrust": {
+      "Server": "vc-mgmt-a.site-a.vcf.lab",
+      "User": "administrator@vsphere.local",
+      "InstanceUuid": "9814e0d7-5d08-4c78-80a5-6ac71375adde",
+      "Cluster": "cluster-mgmt-01a",
+      "VmName": "vc-mgmt-a",
+      "VmUuid": "52c48342-4e82-27f4-428d-4c5fa37d434e",
+      "Ip": "10.1.1.10"
+    }
+  }
+}

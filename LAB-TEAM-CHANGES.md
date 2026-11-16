@@ -3,6 +3,22 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-16: console "~/Lab Files" from the repo
+
+New `lab-files/` folder, a mirror of the console's `~/Lab Files`, and new `Startup/ate2704labfiles.py`, called by `Startup/VCF.py` 1.1 at every startup. Each file in `lab-files/` is copied to the same path under `~/Lab Files` if it is missing or its content differs; the executable bit follows the repo. Nothing is deleted: files only in the template (large or build-only files, students' own files) stay. A failure is logged and never stops the startup.
+
+**To change or add a student file:** edit or add it under `lab-files/` and push. Labs deployed after that get it; no template re-master.
+
+Contents: the files the lab guides use (VVF deployment spec, converge JSON, `wcp-legacy-zone-fix.sh`, `kb425489-endpoint-certs.sh`, `vcf.lab-root-CA.pem`, `vcfa-tenant-to-vcfsso.py`), `supervisor-dns-fix.sh`, and the `Break-Fix Scripts` pack (without its runtime `State/` folder). On the template, `~/Lab Files/LabScripts` was renamed `Break-Fix Scripts`, and the automated Region A upgrade scripts moved from `LabScripts/Upgrades` to `~/Lab Build/RegionA-Upgrades` (build and instructor tools, not for students; `~/Lab Build` is not synced).
+
+Also on the template, everything that is not student or break/fix material moved from `~/Lab Files` to `~/Lab Build` (RegionA, RegionB, VKS-Demo, Supervisor-Certificates, Tools, Archive; list in `~/Lab Build/moved-from-Lab-Files-20261116.txt`). `lab-files/` (47 files) is identical to the template's `~/Lab Files`.
+
+Tested 2026-11-16: template .24 dry run, 0 to copy and 49 unchanged (before the clean-up); lab copy .32, a real run, then a new and a changed file, both copied, then reverted.
+
+## 2026-11-16: console Firefox bookmarks
+
+`console/bookmarks.json` is new. The core `labstartup.sh` finds it at every boot and imports it with `console/import-firefox-bookmarks.sh`, so the console bookmarks no longer depend on what was saved in the template's Firefox profile. Toolbar: HOL Admin (unchanged), Region A (vSphere 8 | VVF 9.1.1 | VCF 9.1.1 > Management Domain > Hosts), Region B (VCF 5.2.1 > Management Domain > Hosts | VCF 9.1.1 > Management Domain and Workload Domain, each with Hosts), VCF Installer. License servers are left out (no login). The import replaces the Firefox bookmark database, which also clears browsing history at each boot. To change the bookmarks: edit them in Firefox, export with Bookmarks > Manage Bookmarks > Import and Backup > Backup, and replace this file.
+
 ## 2026-11-16: Region A after the VCF Installer, the converge and the overlay chapter
 
 `Startup/ate2704stage.py` 1.3 adds three Region A stages (`region_a_vsp`, `region_a_vcf`, `region_a_vpc`, see the table below). Before this, a Region A upgraded with the VCF Installer would not start its `vsp-01a` runtime after a cold start, and a converged Region A would not start `nsx-mgmt-01a` or `sddcmanager-a`. The `add` changes of all stages are now merged per setting, so both runtimes share one power-on block (all control plane nodes, one `Pause:300`, all workers), and `[VCF] vspvms` lists both regions.
@@ -32,7 +48,7 @@ Stages and what they change (see `OVERLAY` in `ate2704stage.py`):
 
 | Stage | Detected by | Startup / shutdown changes |
 |---|---|---|
-| `region_a_9` | VM `ops-a` or `license-server` exists | start `license-server` (post-Edge), `ops-a` and `opsproxy-01a` (if present); wait for its UI; shut down `ops-a` and its proxy in the VCF Operations phases |
+| `region_a_9` | VM `ops-a` or `license-server` exists (vSphere 9.1.1 / converge path), or `ops-01a` or `license-a` (VVF path, since `ate2704stage.py` 1.4) | start the license server (post-Edge), VCF Operations and `opsproxy-01a`, whichever exist; wait for that VCF Operations UI; shut down VCF Operations and its proxy in the VCF Operations phases |
 | `region_a_vsp` | VM `vsp-01a-*` exists (VCF Installer path) | start the `vsp-01a` control plane node, 5 min pause, then its workers (KB 440862; shares the pause with `vsp-01b` when both exist); stop the runtime gracefully on 10.1.1.131 (KB 440874); VSP shutdown phase |
 | `region_a_vcf` | VM `sddcmanager-a` exists (converged to VCF 9.1.1) | start and stop `nsx-mgmt-01a` with the other NSX Managers and `sddcmanager-a` with the other SDDC Manager; check `sddcmanager-a`, `nsx-mgmt-a` and `nsx-mgmt-01a` on 443 and their UIs |
 | `region_a_vpc` | `user-vm-a` or `user-vm-b` not on `user-network-a` (optional NSX overlay chapter) | drop the 10.1.11.130/131 pings and the SSH checks of the test VMs, which now have DHCP addresses on VPC subnets |
