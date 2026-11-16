@@ -1,0 +1,464 @@
+
+{
+ "title": "",
+ "type": "text/x-moz-place-container",
+ "children": [
+  {
+   "title": "menu",
+   "type": "text/x-moz-place-container",
+   "children": [
+    {
+     "title": "Mozilla Firefox",
+     "type": "text/x-moz-place-container",
+     "children": [
+      {
+       "title": "Help and Tutorials",
+       "type": "text/x-moz-place",
+       "uri": "https://support.mozilla.org/en-US/products/firefox"
+      },
+      {
+       "title": "Customize Firefox",
+       "type": "text/x-moz-place",
+       "uri": "https://support.mozilla.org/en-US/kb/customize-firefox-controls-buttons-and-toolbars?utm_source=firefox-browser&utm_medium=default-bookmarks&utm_campaign=customize"
+      },
+      {
+       "title": "Get Involved",
+       "type": "text/x-moz-place",
+       "uri": "https://www.mozilla.org/en-US/contribute/"
+      },
+      {
+       "title": "About Us",
+       "type": "text/x-moz-place",
+       "uri": "https://www.mozilla.org/en-US/about/"
+      }
+     ]
+    },
+    {
+     "title": "Ubuntu and Free Software links",
+     "type": "text/x-moz-place-container",
+     "children": [
+      {
+       "title": "Ubuntu",
+       "type": "text/x-moz-place",
+       "uri": "http://www.ubuntu.com/"
+      },
+      {
+       "title": "Ubuntu Wiki (community-edited website)",
+       "type": "text/x-moz-place",
+       "uri": "http://wiki.ubuntu.com/"
+      },
+      {
+       "title": "Make a Support Request to the Ubuntu Community",
+       "type": "text/x-moz-place",
+       "uri": "https://answers.launchpad.net/ubuntu/+addquestion"
+      },
+      {
+       "title": "Debian (Ubuntu is based on Debian)",
+       "type": "text/x-moz-place",
+       "uri": "http://www.debian.org/"
+      }
+     ]
+    }
+   ],
+   "guid": "menu________",
+   "root": "bookmarksMenuFolder"
+  },
+  {
+   "title": "toolbar",
+   "type": "text/x-moz-place-container",
+   "children": [
+    {
+     "title": "HOL Admin",
+     "type": "text/x-moz-place-container",
+     "children": [
+      {
+       "title": "vc-mgmt-a Appliance Management",
+       "type": "text/x-moz-place",
+       "uri": "https://vc-mgmt-a.site-a.vcf.lab:5480/#/login"
+      },
+      {
+       "title": "vc-wld01-a Appliance Management",
+       "type": "text/x-moz-place",
+       "uri": "https://vc-wld01-a.site-a.vcf.lab:5480/#/login"
+      },
+      {
+       "title": "Technitium DNS Server v14.3",
+       "type": "text/x-moz-place",
+       "uri": "https://dns.vcf.lab/"
+      },
+      {
+       "title": "Authentik",
+       "type": "text/x-moz-place",
+       "uri": "https://auth.vcf.lab/"
+      },
+      {
+       "title": "Sign in \u00b7 GitLab",
+       "type": "text/x-moz-place",
+       "uri": "https://gitlab.vcf.lab/users/sign_in"
+      },
+      {
+       "title": "Vault",
+       "type": "text/x-moz-place",
+       "uri": "https://vault.vcf.lab/"
+      },
+      {
+       "title": "VCF CA Proxy  - proxy in front of Hashicorp Vault",
+       "type": "text/x-moz-place",
+       "uri": "https://ca.vcf.lab/certsrv/certcarc.asp"
+      },
+      {
+       "title": "Lab Startup Status",
+       "type": "text/x-moz-place",
+       "uri": "file:///home/holuser/startup-status.htm"
+      }
+     ]
+    },
+    {
+     "title": "Region A",
+     "type": "text/x-moz-place-container",
+     "children": [
+      {
+       "title": "vSphere 8",
+       "type": "text/x-moz-place-container",
+       "children": [
+        {
+         "title": "vc-mgmt-a Client",
+         "type": "text/x-moz-place",
+         "uri": "https://vc-mgmt-a.site-a.vcf.lab/ui/"
+        },
+        {
+         "title": "vc-mgmt-a Appliance Management",
+         "type": "text/x-moz-place",
+         "uri": "https://vc-mgmt-a.site-a.vcf.lab:5480/"
+        }
+       ]
+      },
+      {
+       "title": "",
+       "type": "text/x-moz-place-separator"
+      },
+      {
+       "title": "VVF 9.1.1",
+       "type": "text/x-moz-place-container",
+       "children": [
+        {
+         "title": "vc-mgmt-a Client",
+         "type": "text/x-moz-place",
+         "uri": "https://vc-mgmt-a.site-a.vcf.lab/ui/"
+        },
+        {
+         "title": "vc-mgmt-a Appliance Management",
+         "type": "text/x-moz-place",
+         "uri": "https://vc-mgmt-a.site-a.vcf.lab:5480/"
+        },
+        {
+         "title": "VCF Operations (ops-01a)",
+         "type": "text/x-moz-place",
+         "uri": "https://ops-01a.site-a.vcf.lab/ui/"
+        },
+        {
+         "title": "VCF Installer",
+         "type": "text/x-moz-place",
+         "uri": "https://vcfinstaller-a.site-a.vcf.lab/vcf-installer-ui/login"
+        }
+       ]
+      },
+      {
+       "title": "",
+       "type": "text/x-moz-place-separator"
+      },
+      {
+       "title": "VCF 9.1.1",
+       "type": "text/x-moz-place-container",
+       "children": [
+        {
+         "title": "Management Domain",
+         "type": "text/x-moz-place-container",
+         "children": [
+          {
+           "title": "SDDC Manager (sddcmanager-a)",
+           "type": "text/x-moz-place",
+           "uri": "https://sddcmanager-a.site-a.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-mgmt-a Client",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-mgmt-a.site-a.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-mgmt-a Appliance Management",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-mgmt-a.site-a.vcf.lab:5480/"
+          },
+          {
+           "title": "NSX Manager (nsx-mgmt-a)",
+           "type": "text/x-moz-place",
+           "uri": "https://nsx-mgmt-a.site-a.vcf.lab/"
+          },
+          {
+           "title": "VCF Operations (ops-a)",
+           "type": "text/x-moz-place",
+           "uri": "https://ops-a.site-a.vcf.lab/ui/"
+          },
+          {
+           "title": "Hosts",
+           "type": "text/x-moz-place-container",
+           "children": [
+            {
+             "title": "esx-01a",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-01a.site-a.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-02a",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-02a.site-a.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-03a",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-03a.site-a.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-04a",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-04a.site-a.vcf.lab/ui/"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "title": "Region B",
+     "type": "text/x-moz-place-container",
+     "children": [
+      {
+       "title": "VCF 5.2.1",
+       "type": "text/x-moz-place-container",
+       "children": [
+        {
+         "title": "Management Domain",
+         "type": "text/x-moz-place-container",
+         "children": [
+          {
+           "title": "SDDC Manager (sddcmanager-b)",
+           "type": "text/x-moz-place",
+           "uri": "https://sddcmanager-b.site-b.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-mgmt-b Client",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-mgmt-b.site-b.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-mgmt-b Appliance Management",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-mgmt-b.site-b.vcf.lab:5480/"
+          },
+          {
+           "title": "NSX Manager (nsx-mgmt-b)",
+           "type": "text/x-moz-place",
+           "uri": "https://nsx-mgmt-b.site-b.vcf.lab/"
+          },
+          {
+           "title": "Aria Suite Lifecycle (opslcm-b)",
+           "type": "text/x-moz-place",
+           "uri": "https://opslcm-b.site-b.vcf.lab/"
+          },
+          {
+           "title": "Workspace ONE Access (vidm-01b)",
+           "type": "text/x-moz-place",
+           "uri": "https://vidm-01b.site-b.vcf.lab/"
+          },
+          {
+           "title": "Aria Automation (auto-01b)",
+           "type": "text/x-moz-place",
+           "uri": "https://auto-01b.site-b.vcf.lab/"
+          },
+          {
+           "title": "Hosts",
+           "type": "text/x-moz-place-container",
+           "children": [
+            {
+             "title": "esx-01b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-01b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-02b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-02b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-03b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-03b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-04b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-04b.site-b.vcf.lab/ui/"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "title": "",
+       "type": "text/x-moz-place-separator"
+      },
+      {
+       "title": "VCF 9.1.1",
+       "type": "text/x-moz-place-container",
+       "children": [
+        {
+         "title": "Management Domain",
+         "type": "text/x-moz-place-container",
+         "children": [
+          {
+           "title": "SDDC Manager (sddcmanager-b)",
+           "type": "text/x-moz-place",
+           "uri": "https://sddcmanager-b.site-b.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-mgmt-b Client",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-mgmt-b.site-b.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-mgmt-b Appliance Management",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-mgmt-b.site-b.vcf.lab:5480/"
+          },
+          {
+           "title": "NSX Manager (nsx-mgmt-b)",
+           "type": "text/x-moz-place",
+           "uri": "https://nsx-mgmt-b.site-b.vcf.lab/"
+          },
+          {
+           "title": "VCF Operations (ops-01b)",
+           "type": "text/x-moz-place",
+           "uri": "https://ops-01b.site-b.vcf.lab/ui/"
+          },
+          {
+           "title": "VCF Automation (auto-01b)",
+           "type": "text/x-moz-place",
+           "uri": "https://auto-01b.site-b.vcf.lab/"
+          },
+          {
+           "title": "Hosts",
+           "type": "text/x-moz-place-container",
+           "children": [
+            {
+             "title": "esx-01b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-01b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-02b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-02b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-03b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-03b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-04b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-04b.site-b.vcf.lab/ui/"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "title": "Workload Domain",
+         "type": "text/x-moz-place-container",
+         "children": [
+          {
+           "title": "vc-wld01-b Client",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-wld01-b.site-b.vcf.lab/ui/"
+          },
+          {
+           "title": "vc-wld01-b Appliance Management",
+           "type": "text/x-moz-place",
+           "uri": "https://vc-wld01-b.site-b.vcf.lab:5480/"
+          },
+          {
+           "title": "NSX Manager (nsx-wld01-b)",
+           "type": "text/x-moz-place",
+           "uri": "https://nsx-wld01-b.site-b.vcf.lab/"
+          },
+          {
+           "title": "Hosts",
+           "type": "text/x-moz-place-container",
+           "children": [
+            {
+             "title": "esx-05b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-05b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-06b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-06b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-07b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-07b.site-b.vcf.lab/ui/"
+            },
+            {
+             "title": "esx-08b",
+             "type": "text/x-moz-place",
+             "uri": "https://esx-08b.site-b.vcf.lab/ui/"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "title": "VCF Installer",
+     "type": "text/x-moz-place",
+     "uri": "https://vcfinstaller-a.site-a.vcf.lab/vcf-installer-ui/login"
+    }
+   ],
+   "guid": "toolbar_____",
+   "root": "toolbarFolder"
+  },
+  {
+   "title": "tags",
+   "type": "text/x-moz-place-container",
+   "children": []
+  },
+  {
+   "title": "unfiled",
+   "type": "text/x-moz-place-container",
+   "children": [],
+   "guid": "unfiled_____",
+   "root": "unfiledBookmarksFolder"
+  },
+  {
+   "title": "mobile",
+   "type": "text/x-moz-place-container",
+   "children": [],
+   "guid": "mobile______",
+   "root": "mobileFolder"
+  }
+ ],
+ "guid": "root________",
+ "root": "placesRoot"
+}

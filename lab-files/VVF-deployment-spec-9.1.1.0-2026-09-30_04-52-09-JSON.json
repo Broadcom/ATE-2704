@@ -1,0 +1,53 @@
+{
+  "version": "9.1.1.0",
+  "ceipEnabled": false,
+  "workflowType": "VVF",
+  "vcfOperationsSpec": {
+    "applianceSize": "medium",
+    "adminUserPassword": "VMware123!VMware123!",
+    "useExistingDeployment": false,
+    "nodes": [
+      {
+        "hostname": "ops-01a.site-a.vcf.lab",
+        "rootUserPassword": "VMware123!VMware123!",
+        "type": "master"
+      }
+    ]
+  },
+  "licenseServerSpec": {
+    "hostname": "license-a.site-a.vcf.lab"
+  },
+  "vspClusterSpec": {
+    "platformFqdn": "vsp-01a.site-a.vcf.lab",
+    "instanceFqdn": "instance-01a.site-a.vcf.lab",
+    "fleetFqdn": "fleet-01a.site-a.vcf.lab",
+    "systemUserPassword": "VMware123!VMware123!",
+    "size": "small",
+    "name": "vc-mgmt-a-vmsp-01",
+    "internalClusterCidrIpv4": "198.18.0.0/15",
+    "ipv4Pool": {
+      "ipRange": {
+        "startIpAddress": "10.1.1.141",
+        "endIpAddress": "10.1.1.160"
+      }
+    }
+  },
+  "telemetryAcceptorSpec": {},
+  "fleetLcmSpec": {
+    "hostname": "fleet-01a.site-a.vcf.lab"
+  },
+  "sddcLcmSpec": {
+    "hostname": "instance-01a.site-a.vcf.lab"
+  },
+  "fleetDepotSpec": {},
+  "vcenterSpec": {
+    "vcenterHostname": "vc-mgmt-a.site-a.vcf.lab",
+    "sslThumbprint": "CB:43:21:FD:60:14:3D:13:50:AB:4A:2C:CE:BF:8E:56:35:C8:16:36:E6:2B:7D:37:82:F5:D8:F9:DB:C7:38:33",
+    "adminUserSsoUsername": "administrator@vsphere.local",
+    "adminUserSsoPassword": "VMware123!VMware123!",
+    "rootVcenterPassword": "VMware123!VMware123!",
+    "useExistingDeployment": true
+  },
+  "skipEsxThumbprintValidation": true,
+  "sddcId": "mgmt-a"
+}

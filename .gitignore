@@ -6,3 +6,6 @@ local/
 
 # Local session checkpoints
 /.checkpoints/
+# Python bytecode caches (created whenever a startup module is run)
+__pycache__/
+*.pyc

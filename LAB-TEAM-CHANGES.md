@@ -3,6 +3,73 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-16: console "~/Lab Files" from the repo
+
+New `lab-files/` folder, a mirror of the console's `~/Lab Files`, and new `Startup/ate2704labfiles.py`, called by `Startup/VCF.py` 1.1 at every startup. Each file in `lab-files/` is copied to the same path under `~/Lab Files` if it is missing or its content differs; the executable bit follows the repo. Nothing is deleted: files only in the template (large or build-only files, students' own files) stay. A failure is logged and never stops the startup.
+
+**To change or add a student file:** edit or add it under `lab-files/` and push. Labs deployed after that get it; no template re-master.
+
+`ate2704labfiles.py` 1.1 mirrors `lab-build/` to `~/Lab Build` the same way (build and instructor files, kept out of the students' folder). First file: `lab-build/RegionA/custom_vsan_esa_hcl_9.1.json`, the vSAN ESA HCL for 9.1 made on lab copy .47 on 2026-11-12 (23 MB; git stores it compressed, about 1.2 MB).
+
+Contents: the files the lab guides use (VVF deployment spec, converge JSON, `wcp-legacy-zone-fix.sh`, `kb425489-endpoint-certs.sh`, `vcf.lab-root-CA.pem`, `vcfa-tenant-to-vcfsso.py`), `supervisor-dns-fix.sh`, and the `Break-Fix Scripts` pack (without its runtime `State/` folder). On the template, `~/Lab Files/LabScripts` was renamed `Break-Fix Scripts`, and the automated Region A upgrade scripts moved from `LabScripts/Upgrades` to `~/Lab Build/RegionA-Upgrades` (build and instructor tools, not for students; `~/Lab Build` is not synced).
+
+Also on the template, everything that is not student or break/fix material moved from `~/Lab Files` to `~/Lab Build` (RegionA, RegionB, VKS-Demo, Supervisor-Certificates, Tools, Archive; list in `~/Lab Build/moved-from-Lab-Files-20261116.txt`). `lab-files/` (47 files) is identical to the template's `~/Lab Files`.
+
+Tested 2026-11-16: template .24 dry run, 0 to copy and 49 unchanged (before the clean-up); lab copy .32, a real run, then a new and a changed file, both copied, then reverted.
+
+## 2026-11-16: console Firefox bookmarks
+
+`console/bookmarks.json` is new. The core `labstartup.sh` finds it at every boot and imports it with `console/import-firefox-bookmarks.sh`, so the console bookmarks no longer depend on what was saved in the template's Firefox profile. Toolbar: HOL Admin (unchanged), Region A (vSphere 8 | VVF 9.1.1 | VCF 9.1.1 > Management Domain > Hosts), Region B (VCF 5.2.1 > Management Domain > Hosts | VCF 9.1.1 > Management Domain and Workload Domain, each with Hosts), VCF Installer. License servers are left out (no login). The import replaces the Firefox bookmark database, which also clears browsing history at each boot. To change the bookmarks: edit them in Firefox, export with Bookmarks > Manage Bookmarks > Import and Backup > Backup, and replace this file.
+
+## 2026-11-16: Region A after the VCF Installer, the converge and the overlay chapter
+
+`Startup/ate2704stage.py` 1.3 adds three Region A stages (`region_a_vsp`, `region_a_vcf`, `region_a_vpc`, see the table below). Before this, a Region A upgraded with the VCF Installer would not start its `vsp-01a` runtime after a cold start, and a converged Region A would not start `nsx-mgmt-01a` or `sddcmanager-a`. The `add` changes of all stages are now merged per setting, so both runtimes share one power-on block (all control plane nodes, one `Pause:300`, all workers), and `[VCF] vspvms` lists both regions.
+
+Tested 2026-11-16 on the converged lab copy (.32): detection, the new port/URL checks, `Shutdown.py --dry-run` (Region A runtime script dry run authenticated; VSP, VCF Operations, proxy, NSX and SDDC Manager phases list the Region A VMs) and `VCF.py --standalone --dry-run`. Template .24 (not upgraded): no changes. A real shutdown and cold start of a converged lab is not tested yet.
+
+## 2026-11-15: upgrade-stage aware startup and shutdown
+
+**Problem.** `config.ini` describes the delivered lab. After attendees upgrade
+(Region A to 9.1.1, Region B to VCF 9.1.1, Aria Automation to VCF Automation
+9.1.1, wld01-b to 9.1.1), a shutdown and cold start used the old settings: the
+new VCF 9 VMs were not started, deleted vIDM / Suite Lifecycle VMs were still
+expected, and the old `auto-01b` VM would be powered on although its IP
+(10.2.12.151) now belongs to VCF Automation 9.1.
+
+**Change (no core files touched).**
+
+| File | Status | Purpose |
+|---|---|---|
+| `Startup/ate2704stage.py` | new (v1.0) | Detects the stage over direct ESXi connections (VMs that exist, ESX versions) and holds the setting changes per stage (`OVERLAY`). Run it on its own to see the result. |
+| `Startup/VCF.py` | new (v1.0) | Wrapper: detect, apply the overlay to `lsf.config` and `/tmp/config.ini` (original kept as `/tmp/config.ini.base`), then run the core `~/hol/Startup/VCF.py` unchanged. Detection failure = baseline settings. |
+| `Startup/VCFfinal.py` | changed (v1.6) | Stage report (vCenter versions, wld01-b import state from SDDC Manager, Supervisor version/status/services); Aria 8 steps skipped and old `auto-01b` never powered on after the Automation upgrade; new Task 3b waits for the VCF 9 UIs; Task 1c (x-region, from v1.5) keeps checking the Edge TEPs after vIDM / Suite Lifecycle are deleted, because VCF Automation 9.1 uses the same segment. |
+| `Shutdown/Shutdown.py` | changed (v1.1) | Detects the stage and writes the matching settings for the core shutdown. After the Automation upgrade: no `deploy.sh`; VCF Automation 9.1 is powered off the documented way through the Region B Fleet lifecycle service, `fleet-01b` (KB 444635, = VCF Operations > Lifecycle > VCF Automation > Power off; token obtained from `vsp-01b` because the core `fleet.get_fleet_lcm_jwt()` only knows `vsp-01a`), falling back to its runtime shutdown script. Then the management services runtime is stopped with Broadcom's `vcf_services_runtime_shutdown.sh --skip-poweroff` (KB 440874). The core Phase 2b would run that script too, but it powers the VMs off with `govc`, which is not installed on the Manager. |
+| `config.ini` | changed (v2.7) | Notes only; the baseline settings are unchanged. |
+
+Stages and what they change (see `OVERLAY` in `ate2704stage.py`):
+
+| Stage | Detected by | Startup / shutdown changes |
+|---|---|---|
+| `region_a_9` | VM `ops-a` or `license-server` exists (vSphere 9.1.1 / converge path), or `ops-01a` or `license-a` (VVF path, since `ate2704stage.py` 1.4) | start the license server (post-Edge), VCF Operations and `opsproxy-01a`, whichever exist; wait for that VCF Operations UI; shut down VCF Operations and its proxy in the VCF Operations phases |
+| `region_a_vsp` | VM `vsp-01a-*` exists (VCF Installer path) | start the `vsp-01a` control plane node, 5 min pause, then its workers (KB 440862; shares the pause with `vsp-01b` when both exist); stop the runtime gracefully on 10.1.1.131 (KB 440874); VSP shutdown phase |
+| `region_a_vcf` | VM `sddcmanager-a` exists (converged to VCF 9.1.1) | start and stop `nsx-mgmt-01a` with the other NSX Managers and `sddcmanager-a` with the other SDDC Manager; check `sddcmanager-a`, `nsx-mgmt-a` and `nsx-mgmt-01a` on 443 and their UIs |
+| `region_a_vpc` | `user-vm-a` or `user-vm-b` not on `user-network-a` (optional NSX overlay chapter) | drop the 10.1.11.130/131 pings and the SSH checks of the test VMs, which now have DHCP addresses on VPC subnets |
+| `region_b_9` | VM `ops-01b` or `vsp-01b-*` exists | start `license-b`; the `vsp-01b` control plane node, 5 min pause, then its workers (KB 440862); `ops-01b`, `opsproxy-01b`; wait for VCF Operations and the identity broker (the runtime needs 15-20 min to recover); shutdown phases for VCF Operations, its proxy and the VSP nodes |
+| `automation_9` | VM `auto-int-b-*` exists | never start `auto-01b`; start VCF Automation 9.1 through Fleet once the management runtime is back, then check it; no `deploy.sh`; drop the 10.2.12.151 ping; shutdown powers VCF Automation off through Fleet first and waits for that to finish |
+| `wld_9` | ESX 9.x on esx-05b..08b | reported only |
+| any | VM no longer exists | removed from VM lists, and its TCP/URL and `xregion_*` checks (vIDM, Suite Lifecycle) |
+
+**Test on the fully upgraded lab copy (.54, now .26), 2026-11-15, and the fix it led to:**
+
+- Shutdown (wrapper 1.1) took 47 min and the cold start reached Ready in 24 min.
+- 4 minutes after Ready, VCF Automation 9.1 was powered off by `svc-sddclcm-vc-…`.
+  - Cause: the Fleet "Shutdown component VCF Automation" workflow was still running when the wrapper stopped the management services runtime. The core helper stops tracking it after about 2 min.
+  - When the runtime recovered, the workflow resumed, powered the VM off, and ended FAILED. The startup had powered the VM on directly and checked it before that happened.
+- Fix:
+  - `Shutdown/Shutdown.py` 1.2 waits for the Fleet workflow to end (up to 45 min) before stopping the runtime.
+  - `Startup/VCFfinal.py` 1.7 Task 3a starts VCF Automation through Fleet (`action=start`, the documented power-on, KB 444635) once the runtime is back, and only then runs the VCF Automation URL check. If Fleet cannot be reached, it falls back to a VM power-on.
+  - `Startup/ate2704stage.py` 1.1 no longer powers `auto-int-b-*` on with the post-Edge VMs, and holds the shared Fleet helpers.
+
 ## Summary
 
 **No core files were modified.** `git status` in `~/hol` on the Manager is clean

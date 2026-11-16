@@ -1,5 +1,35 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.4 - 2026-11-10
+# Version 1.8 - 2026-11-15
+#   1.8: Task 3a retries the Fleet start for up to 15 minutes when Fleet answers
+#        with a server error. On the second cold-start test Fleet's login worked
+#        a minute after the management runtime recovered, but its Fleet Build
+#        service was not ready yet ("Internal Server Error for service Fleet
+#        Build", HTTP 500), so 1.7 fell straight back to a VM power-on.
+#   1.7: Task 3a starts VCF Automation 9.1 through the Region B Fleet lifecycle
+#        service (= VCF Operations > Lifecycle > VCF Automation > Power on,
+#        KB 444635) once the management services runtime is back, instead of a
+#        VM-level power-on; Task 3 (the URL check) runs after it. On the first
+#        cold-start test the VM-level power-on was undone 4 minutes after Ready
+#        by an unfinished Fleet shutdown workflow. Falls back to a VM power-on
+#        if Fleet is not reachable.
+#   1.6: Upgrade-stage aware (Startup/ate2704stage.py, applied by Startup/VCF.py).
+#        Task S reports the stage, the wld01-b import/upgrade state and the
+#        Supervisor (version, status, services). After the VCF Automation
+#        upgrade the Aria Automation 8 steps are skipped and the old auto-01b VM
+#        is never powered on; Task 3 then checks VCF Automation 9.1. Task 3b
+#        waits for the VCF 9 UIs ([VCFFINAL] vcf9_urls, set by the stage
+#        overlay: VCF Operations, identity broker). Task 1c runs the Edge TEP
+#        check whenever xregion_edges is set, also once vIDM / Suite Lifecycle
+#        are deleted (VCF Automation 9.1 uses the same x-region segment).
+#   1.5: Task 1c heals the Site B Edges and waits for the x-region appliances.
+#        On fresh lab copies (.47, .54) one TEP of edge-mgmt-02b came up dead
+#        (no tunnels, router could not ARP it). The active/active T0 then
+#        dropped part of the x-region traffic, opslcm-b missed the core's 20
+#        TCP attempts and the startup failed. Task 1c checks the Edge tunnels
+#        through the NSX API and reconnects the Edge's uplink NICs if a TEP is
+#        dead (the fix that worked by hand), then waits for Aria Suite
+#        Lifecycle and Workspace ONE Access, restarting a guest that still
+#        does not answer.
 #   1.4: Task 1b un-pauses the VKS clusters the core shutdown paused (Phase 3b
 #        sets spec.paused and nothing in the core startup clears it).
 #        Task 4 checks the Supervisor Services (Contour, Harbor, LCI, Argo CD)
@@ -48,6 +78,13 @@
 #           control plane credentials on the Supervisor vCenter
 #           (decryptK8Pwd.py over SSH) and set spec.paused=false on every
 #           Cluster the shutdown paused. Never fails the lab.
+#   Task 1c x-region appliances (xregion_urls): first check the TEP tunnels of
+#           xregion_edges on xregion_nsx and reconnect the uplink NICs of an
+#           Edge with a dead TEP. Then wait for Aria Suite Lifecycle
+#           and Workspace ONE Access on the NSX x-region segment. If one is
+#           still not answering after xregion_restart_minutes, restart its
+#           guest OS once (VM from xregion_vms). Runs before the Aria
+#           Automation tasks, because deploy.sh needs Workspace ONE Access.
 #   Task 4  Supervisor Services (supervisor_services): wait until each listed
 #           service reports CONFIGURED on the Supervisor.
 #   Task 5  Kubernetes URLs (k8s_urls, "url,expected text"): Harbor, Argo CD,
@@ -67,16 +104,32 @@
 #   k8s_urls             (none)          url,expected text
 #   k8s_wait_minutes     (default 30)    wait for Tasks 4 and 5
 #   k8s_required         (default false) fail the lab if Task 4 or 5 is not ready
+#   xregion_urls         (none)          url[,expected text] for Task 1c
+#   xregion_vms          (none)          vm_name:vcenter, matched to the URL host
+#   xregion_nsx          (none)          NSX Manager for the Edge TEP check
+#   xregion_edges        (none)          Edge transport node / VM names
+#   xregion_edges_vcenter (all)          vCenter that holds the Edge VMs
+#   xregion_restart_minutes (default 10) restart a guest still down after this
+#   xregion_wait_minutes (default 30)    total wait for Task 1c
+#   xregion_required     (default true)  fail the lab if a URL never answers
 #
-# Remove this file (and revisit config.ini) once the lab is on VCF 9.x and the
-# core VCFfinal tasks apply.
+#   vcf9_urls            (stage overlay) VCF 9 UIs, "url[,expected text]"
+#   vcf9_wait_minutes    (default 45)    Task 3b wait
+#   vcf9_required        (default false) fail the lab if a VCF 9 UI never answers
+#   vcfa_fleet_wait_minutes (default 60) Task 3a: wait for Fleet and the start workflow
+#
+# The core VCFfinal.py stays unused even after the upgrades: its WCP tuning,
+# NSX password-policy and Vault CA steps are not wanted in this lab. The VCF 9
+# VMs are powered on by the core VCF.py / vSphere.py from the stage overlay.
 
 import os
 import sys
 import time
 
 MODULE_NAME = 'VCFfinal'
-MODULE_DESCRIPTION = 'ATE-2704 final tasks (Supervisor, VKS, Supervisor Services, Aria Automation 8)'
+MODULE_DESCRIPTION = 'ATE-2704 final tasks (stage report, Supervisor, VKS, x-region, Supervisor Services, Automation, VCF 9 UIs)'
+HERE = os.path.dirname(os.path.abspath(__file__))
+STAGE = {}
 LOCK_FILE = '/tmp/VCFfinal.lock'
 DONE_FILE = '/tmp/VCFfinal.done'
 
@@ -115,6 +168,91 @@ def _set(db, ts, task, status, msg=''):
         db.generate_html()
     except Exception:
         pass
+
+
+def _stage_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('ate2704stage', os.path.join(HERE, 'ate2704stage.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_stage(lsf):
+    """Stage saved by Startup/VCF.py this boot, or detect it now (standalone runs)."""
+    try:
+        stg = _stage_module()
+        st = stg.load()
+        if not st:
+            # Not saved by Startup/VCF.py (standalone run): detect and adjust the settings in memory.
+            st = stg.detect(lsf)
+            st['changes'] = stg.apply_overlay(lsf.config, st, lsf.write_output)
+        return st or {}
+    except Exception as e:
+        lsf.write_output(f'Could not determine the upgrade stage ({e})')
+        return {}
+
+
+def _active(name):
+    return bool(STAGE.get('stages', {}).get(name))
+
+
+def task_stage_report(lsf, db, ts, dry_run):
+    """Report the upgrade stage, the wld01-b import/upgrade state and the Supervisor. Never fails the lab."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        lsf.write_output('ATE-2704 stage: ' + _stage_module().summary(STAGE))
+    except Exception:
+        pass
+    for c in STAGE.get('changes', []):
+        lsf.write_output('  applied: ' + c)
+    if dry_run:
+        lsf.write_output('Would report vCenter versions, the wld01-b import state and the Supervisor state')
+        return True
+    users = _sso_users(lsf)
+    # vCenter versions
+    for vc in users:
+        v = _vc_api(lsf, vc, users[vc], lambda rq, base, h: rq.get(f'{base}/appliance/system/version', headers=h,
+                                                                   verify=False, timeout=30).json())
+        if isinstance(v, dict):
+            lsf.write_output(f'{vc}: vCenter {v.get("version")} build {v.get("build")}')
+    # wld01-b import: is it a workload domain in SDDC Manager?
+    try:
+        sddc = 'sddcmanager-b.site-b.vcf.lab'
+        t = requests.post(f'https://{sddc}/v1/tokens', json={'username': 'administrator@vsphere.local',
+                          'password': lsf.get_password()}, verify=False, timeout=30)
+        if t.status_code in (200, 201):
+            h = {'Authorization': 'Bearer ' + t.json()['accessToken']}
+            doms = requests.get(f'https://{sddc}/v1/domains', headers=h, verify=False, timeout=30).json().get('elements', [])
+            names = [f'{d.get("name")} ({d.get("type")})' for d in doms]
+            vcs = requests.get(f'https://{sddc}/v1/vcenters', headers=h, verify=False, timeout=30).json().get('elements', [])
+            imported = any('wld01-b' in (v.get('fqdn') or '') for v in vcs)
+            lsf.write_output(f'SDDC Manager domains: {", ".join(names) or "none"}; '
+                             f'wld01-b {"imported as a workload domain" if imported else "not imported (standalone vCenter)"}')
+        else:
+            lsf.write_output(f'SDDC Manager API: token request returned HTTP {t.status_code}')
+    except Exception as e:
+        lsf.write_output(f'SDDC Manager API not available ({e})')
+    # Supervisor on wld01-b
+    for vc in _tanzu_vcenters(lsf):
+        def calls(rq, base, h):
+            out = []
+            for c in rq.get(f'{base}/vcenter/namespace-management/clusters', headers=h, verify=False, timeout=30).json():
+                cid = c.get('cluster')
+                sw = rq.get(f'{base}/vcenter/namespace-management/software/clusters/{cid}', headers=h, verify=False, timeout=30)
+                ver = sw.json().get('current_version') if sw.status_code == 200 else None
+                svcs = rq.get(f'{base}/vcenter/namespace-management/clusters/{cid}/supervisor-services', headers=h,
+                              verify=False, timeout=30)
+                svc_list = [f'{s.get("supervisor_service")}={s.get("current_version")}' for s in svcs.json()] \
+                    if svcs.status_code == 200 else []
+                out.append(f'Supervisor {c.get("cluster_name") or cid}: config {c.get("config_status")}, '
+                           f'kubernetes {c.get("kubernetes_status")}, version {ver}; services: {", ".join(svc_list) or "none"}')
+            return out
+        for line in (_vc_api(lsf, vc, users.get(vc, 'administrator@vsphere.local'), calls) or ['Supervisor: vCenter API not reachable']):
+            lsf.write_output(f'{vc}: {line}')
+    return True
 
 
 def _sso_users(lsf):
@@ -400,7 +538,194 @@ def task_k8s_urls(lsf, db, ts, dry_run):
     return _k8s_fail(lsf, f'Kubernetes URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending))
 
 
+def _restart_guest(lsf, vm_name):
+    """Restart a VM's guest OS through VMware Tools; reset the VM if Tools cannot do it."""
+    vms = lsf.get_vm_match(f'^{vm_name}$') or lsf.get_vm_match(vm_name)
+    if not vms:
+        lsf.write_output(f'  WARNING: no VM matches {vm_name} - cannot restart it')
+        return False
+    vm = vms[0]
+    try:
+        vm.RebootGuest()
+        lsf.write_output(f'  Restarted the guest OS of {vm.name} (VMware Tools)')
+        return True
+    except Exception as e:
+        lsf.write_output(f'  Guest restart of {vm.name} failed ({e}) - resetting the VM')
+    try:
+        vm.ResetVM_Task()
+        lsf.write_output(f'  Reset {vm.name}')
+        return True
+    except Exception as e:
+        lsf.write_output(f'  WARNING: could not reset {vm.name}: {e}')
+        return False
+
+
+def _edge_dead_teps(lsf, nsx, edges):
+    """Return {edge_name: [local TEP IPs with tunnels but none UP]} from the NSX Manager API."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    auth = ('admin', lsf.get_password())
+    bad = {}
+    try:
+        tns = requests.get(f'https://{nsx}/api/v1/transport-nodes', auth=auth, verify=False, timeout=30).json()
+        ids = {t['display_name']: t['node_id'] for t in tns.get('results', [])}
+        for e in edges:
+            if e not in ids:
+                lsf.write_output(f'  {e}: not an NSX transport node on {nsx}')
+                continue
+            tun = requests.get(f'https://{nsx}/api/v1/transport-nodes/{ids[e]}/tunnels', auth=auth,
+                               verify=False, timeout=30).json().get('tunnels', [])
+            per_ip = {}
+            for t in tun:
+                per_ip.setdefault(t.get('local_ip'), []).append(t.get('status'))
+            dead = [ip for ip, st in per_ip.items() if st and 'UP' not in st]
+            lsf.write_output(f'  {e}: TEPs ' + ', '.join(f'{ip} {st.count("UP")}/{len(st)} up' for ip, st in per_ip.items()))
+            if dead:
+                bad[e] = dead
+    except Exception as ex:
+        lsf.write_output(f'  NSX tunnel check on {nsx} failed: {ex}')
+    return bad
+
+
+def _bounce_nic(lsf, vm, dev):
+    """Disconnect and reconnect one VM network adapter."""
+    from pyVmomi import vim
+    for state in (False, True):
+        dev.connectable.connected = state
+        spec = vim.vm.ConfigSpec(deviceChange=[vim.vm.device.VirtualDeviceSpec(
+            operation=vim.vm.device.VirtualDeviceSpec.Operation.edit, device=dev)])
+        task = vm.ReconfigVM_Task(spec)
+        for _ in range(60):
+            if task.info.state in ('success', 'error'):
+                break
+            time.sleep(1)
+        if task.info.state != 'success':
+            lsf.write_output(f'  {vm.name}: reconfigure of {dev.deviceInfo.label} failed ({task.info.error})')
+            return False
+        time.sleep(5)
+    return True
+
+
+def task_edge_teps(lsf, dry_run):
+    """Heal an NSX Edge whose TEP has no working tunnel.
+
+    Seen on fresh copies of the template (.47, .54): one of edge-mgmt-02b's two
+    TEPs stayed unreachable (the router could not ARP it) while the Edge's
+    other TEP worked. The active/active T0 then dropped part of the x-region
+    traffic, so opslcm-b answered some clients and not others. vMotion did not
+    help; disconnecting and reconnecting the Edge's uplink NIC did. This does
+    the same, one data NIC at a time (never Network adapter 1, management),
+    stopping as soon as every TEP has an UP tunnel. Never fails the lab.
+    """
+    nsx = lsf.config.get('VCFFINAL', 'xregion_nsx', fallback='').strip()
+    edges = lsf.get_config_list('VCFFINAL', 'xregion_edges', split_comma=True)
+    if not nsx or not edges:
+        return
+    if dry_run:
+        lsf.write_output(f'Would check the TEP tunnels of {edges} on {nsx} and reconnect a dead uplink NIC')
+        return
+    lsf.write_output(f'Checking NSX Edge TEP tunnels on {nsx}...')
+    bad = _edge_dead_teps(lsf, nsx, edges)
+    if bad:
+        # Tunnels can lag right after an Edge boots: confirm before touching anything.
+        lsf.write_output(f'  Dead TEP(s) {bad} - checking again in 90 s')
+        lsf.labstartup_sleep(90)
+        bad = _edge_dead_teps(lsf, nsx, edges)
+    if not bad:
+        lsf.write_output('  All Edge TEPs have working tunnels')
+        return
+    vc = lsf.config.get('VCFFINAL', 'xregion_edges_vcenter', fallback='').strip()
+    lsf.connect_vcenters([v for v in lsf.get_config_list('RESOURCES', 'vCenters') if not vc or v.split(':')[0] == vc])
+    from pyVmomi import vim
+    for edge, dead in bad.items():
+        vms = lsf.get_vm_match(f'^{edge}$')
+        if not vms:
+            lsf.write_output(f'  WARNING: no VM named {edge} - cannot heal TEP(s) {dead}')
+            continue
+        vm = vms[0]
+        nics = [d for d in vm.config.hardware.device if isinstance(d, vim.vm.device.VirtualEthernetCard)
+                and d.connectable and d.connectable.connected and d.deviceInfo.label != 'Network adapter 1']
+        for nic in reversed(nics):
+            lsf.write_output(f'  {edge}: TEP(s) {dead} dead - reconnecting {nic.deviceInfo.label}')
+            _bounce_nic(lsf, vm, nic)
+            lsf.labstartup_sleep(45)
+            if edge not in _edge_dead_teps(lsf, nsx, [edge]):
+                lsf.write_output(f'  {edge}: all TEPs up after reconnecting {nic.deviceInfo.label}')
+                break
+        else:
+            lsf.write_output(f'  WARNING: {edge} still has a dead TEP after reconnecting its uplink NICs')
+
+
+def task_xregion(lsf, db, ts, dry_run):
+    """Wait for the x-region appliances; restart a guest that stays unreachable (once)."""
+    from urllib.parse import urlparse
+    specs = lsf.get_config_list('VCFFINAL', 'xregion_urls')
+    if lsf.get_config_list('VCFFINAL', 'xregion_edges'):
+        # 1.6: also when the appliances below are gone - VCF Automation 9.1 uses the same segment.
+        try:
+            task_edge_teps(lsf, dry_run)
+        except Exception as ex:
+            lsf.write_output(f'WARNING: Edge TEP check failed: {ex}')
+    if not specs:
+        lsf.write_output('No xregion_urls (appliances deleted or not configured) - skipping x-region appliance waits')
+        return True
+    vm_entries = lsf.get_config_list('VCFFINAL', 'xregion_vms')
+    restart_min = _int(lsf, 'xregion_restart_minutes', 10)
+    wait_min = _int(lsf, 'xregion_wait_minutes', 30)
+    required = _bool(lsf, 'xregion_required', True)
+    if dry_run:
+        lsf.write_output(f'Would wait {wait_min} min for {specs}, restarting a guest from {vm_entries} '
+                         f'still down after {restart_min} min (required={required})')
+        return True
+    lsf.write_vpodprogress('x-region appliances', 'GOOD-8')
+    pending = []
+    for s in specs:
+        url, _, text = s.partition(',')
+        pending.append((url.strip(), text.strip() or None))
+    vms = {}
+    for e in vm_entries:
+        name, _, vc = e.partition(':')
+        vms[name.strip()] = vc.strip()
+    restarted = set()
+    start = time.time()
+    while pending and time.time() - start < wait_min * 60:
+        still = []
+        for url, text in pending:
+            if lsf.test_url(url, expected_text=text, timeout=20):
+                lsf.write_output(f'[OK] {url} after {int(time.time() - start)}s')
+            else:
+                still.append((url, text))
+        pending = still
+        if not pending:
+            break
+        if time.time() - start >= restart_min * 60:
+            for url, _ in pending:
+                host = urlparse(url).hostname or ''
+                name = next((n for n in vms if host.split('.')[0] == n), None)
+                if name and name not in restarted:
+                    lsf.write_output(f'{host} still not answering after {restart_min} min - restarting {name}')
+                    vc = vms[name]
+                    vc_entries = [v for v in lsf.get_config_list('RESOURCES', 'vCenters') if not vc or v.split(':')[0] == vc]
+                    lsf.connect_vcenters(vc_entries)
+                    _restart_guest(lsf, name)
+                    restarted.add(name)
+        lsf.write_output(f'Waiting for x-region appliances ({len(pending)} URL(s) not answering yet)...')
+        lsf.labstartup_sleep(30)
+    if not pending:
+        return True
+    msg = f'x-region appliance URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending)
+    lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
+    if required:
+        lsf.labfail(msg)
+        return False
+    return True
+
+
 def task_aria_vms(lsf, db, ts, dry_run):
+    if _active('automation_9'):
+        lsf.write_output('VCF Automation 9.1 is started through Fleet (Task 3a), not at VM level')
+        return True
     entries = lsf.get_config_list('VCFFINAL', 'vravms')
     if not entries:
         lsf.write_output('No vravms configured - skipping Aria Automation VMs')
@@ -409,7 +734,7 @@ def task_aria_vms(lsf, db, ts, dry_run):
     if dry_run:
         lsf.write_output(f'Would make sure these Aria Automation VMs are powered on: {entries}')
         return True
-    lsf.write_vpodprogress('Aria Automation', 'GOOD-8')
+    lsf.write_vpodprogress('VCF Automation' if _active('automation_9') else 'Aria Automation', 'GOOD-8')
     _set(db, ts, 'vcfa_vms', 'RUNNING')
     wanted = {e.split(':')[1].strip() for e in entries if ':' in e and e.split(':')[1].strip()}
     vc_entries = [v for v in lsf.get_config_list('RESOURCES', 'vCenters') if not wanted or v.split(':')[0] in wanted]
@@ -422,6 +747,10 @@ def task_aria_vms(lsf, db, ts, dry_run):
             errors.append(f'no VM matches {pat}')
             continue
         for vm in vms:
+            if _active('automation_9') and vm.name == 'auto-01b':
+                # After the upgrade, 10.2.12.151 belongs to VCF Automation 9.1: the old VM must stay off.
+                lsf.write_output('auto-01b is the old Aria Automation 8.18.1 VM - leaving it powered off')
+                continue
             if lsf.is_vm_powered_on(vm):
                 lsf.write_output(f'{vm.name} already powered on')
             elif not lsf.start_vm(vm):
@@ -461,6 +790,9 @@ def task_aria_services(lsf, db, ts, dry_run):
     deploy.sh runs in the background on the appliance; task_aria_urls then
     waits for the UI.
     """
+    if _active('automation_9'):
+        lsf.write_output('VCF Automation 9.1 deployed - no Aria Automation 8 services (deploy.sh) to start')
+        return True
     hosts = lsf.get_config_list('VCFFINAL', 'vra_start_hosts')
     if not hosts:
         lsf.write_output('No vra_start_hosts configured - not starting Aria Automation services')
@@ -514,7 +846,7 @@ def task_aria_urls(lsf, db, ts, dry_run):
     if dry_run:
         lsf.write_output(f'Would check Aria Automation URLs {specs} (wait {wait_min} min, required={required})')
         return True
-    lsf.write_vpodprogress('Aria Automation URLs', 'GOOD-8')
+    lsf.write_vpodprogress(f'{_auto_name()} URLs', 'GOOD-8')
     _set(db, ts, 'vcfa_urls', 'RUNNING')
     pending = []
     for s in specs:
@@ -530,14 +862,149 @@ def task_aria_urls(lsf, db, ts, dry_run):
                 still.append((url, text))
         pending = still
         if pending:
-            lsf.write_output(f'Waiting for Aria Automation ({len(pending)} URL(s) not answering yet)...')
+            lsf.write_output(f'Waiting for {_auto_name()} ({len(pending)} URL(s) not answering yet)...')
             lsf.labstartup_sleep(60)
     if not pending:
         _set(db, ts, 'vcfa_urls', 'COMPLETE')
         return True
-    msg = 'Aria Automation URL(s) not answering after ' + f'{wait_min} min: ' + ', '.join(u for u, _ in pending)
+    msg = f'{_auto_name()} URL(s) not answering after ' + f'{wait_min} min: ' + ', '.join(u for u, _ in pending)
     lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
     _set(db, ts, 'vcfa_urls', 'FAILED', msg)
+    if required:
+        lsf.labfail(msg)
+        return False
+    return True
+
+
+def _vcfa_vm_power_on(lsf):
+    """Fallback: power the VCF Automation VMs on directly (vravms)."""
+    entries = lsf.get_config_list('VCFFINAL', 'vravms')
+    wanted = {e.split(':')[1].strip() for e in entries if ':' in e}
+    lsf.connect_vcenters([v for v in lsf.get_config_list('RESOURCES', 'vCenters') if v.split(':')[0] in wanted])
+    for e in entries:
+        for vm in lsf.get_vm_match(e.split(':')[0].strip()):
+            if vm.name == 'auto-01b':
+                continue
+            if lsf.is_vm_powered_on(vm):
+                lsf.write_output(f'{vm.name} already powered on')
+            else:
+                lsf.write_output(f'Powering on {vm.name} (fallback)')
+                lsf.start_vm(vm)
+
+
+def task_vcfa_fleet_start(lsf, db, ts, dry_run):
+    """Start VCF Automation 9.1 through Fleet if it is not running (KB 444635). Never fails the lab
+    by itself: Task 3 (vraurls) decides whether VCF Automation is up."""
+    if not _active('automation_9'):
+        return True
+    import time as _t
+    stg = _stage_module()
+    fqdn = (lsf.get_config_list('SHUTDOWN', 'vcfa_fleet_lcm_fqdn') or [stg.FLEET_FQDN])[0]
+    node = (lsf.get_config_list('SHUTDOWN', 'vcfa_vsp_node') or [stg.FLEET_VSP_NODE])[0]
+    wait_min = _int(lsf, 'vcfa_fleet_wait_minutes', 60)
+    if dry_run:
+        lsf.write_output(f'Would start VCF Automation through Fleet ({fqdn}) if it is stopped (wait {wait_min} min)')
+        return True
+    lsf.write_vpodprogress('VCF Automation start (Fleet)', 'GOOD-8')
+    deadline = _t.time() + wait_min * 60
+    token = comp = None
+    while _t.time() < deadline:
+        try:
+            token = stg.fleet_token(lsf, fqdn, node)
+            comp = stg.fleet_component(token, 'VCFA', fqdn)
+            break
+        except Exception as e:
+            lsf.write_output(f'Waiting for the Fleet lifecycle service ({e.__class__.__name__})...')
+            lsf.labstartup_sleep(60)
+    if not comp:
+        lsf.write_output('WARNING: Fleet not reachable or no VCFA component - powering VCF Automation on directly')
+        _vcfa_vm_power_on(lsf)
+        return True
+    last = stg.fleet_last_power_workflow(token, comp.get('fqdn'), fqdn)
+    vm_off = False
+    try:
+        lsf.connect_vcenters([v for v in lsf.get_config_list('RESOURCES', 'vCenters') if 'vc-mgmt-b' in v])
+        vm_off = any(not lsf.is_vm_powered_on(v) for v in lsf.get_vm_match('auto-int-b-.*'))
+    except Exception:
+        pass
+    lsf.write_output(f'VCF Automation in Fleet: last power workflow {last}; VM {"off" if vm_off else "on"}')
+    if last and last[0] == 'START_COMPONENT_WORKFLOW' and last[1] == 'RUNNING':
+        task = last[2]
+        lsf.write_output('A Fleet start workflow is already running - waiting for it')
+    elif vm_off or (last and last[0] == 'SHUTDOWN_COMPONENT_WORKFLOW'):
+        task, err, retry_end = None, '', min(deadline, _t.time() + 15 * 60)
+        while task is None:
+            try:
+                task = stg.fleet_action(token, comp.get('componentUuid') or comp.get('id'), 'start', fqdn)
+            except Exception as e:
+                err = str(e)
+                # Fleet services come up one by one after the runtime recovers; retry server errors.
+                if 'HTTP 5' not in err or _t.time() >= retry_end:
+                    break
+                lsf.write_output(f'Fleet not ready to start VCF Automation yet ({err[:120]}) - retrying in 60 s')
+                lsf.labstartup_sleep(60)
+                try:
+                    token = stg.fleet_token(lsf, fqdn, node)
+                except Exception:
+                    pass
+        if task is None:
+            lsf.write_output(f'WARNING: Fleet start failed ({err[:300]}) - powering VCF Automation on directly')
+            _vcfa_vm_power_on(lsf)
+            return True
+        lsf.write_output(f'"Start component VCF Automation" started through Fleet (task {task})')
+    else:
+        lsf.write_output('VCF Automation is running according to Fleet - nothing to start')
+        return True
+    left = max(60, int(deadline - _t.time()))
+    status = stg.fleet_wait(lambda: stg.fleet_token(lsf, fqdn, node), task, left, lsf.write_output,
+                            lsf.labstartup_sleep, fqdn)
+    lsf.write_output(f'Fleet "Start component VCF Automation": {status}')
+    if status != 'SUCCEEDED':
+        lsf.write_output('WARNING: Fleet start did not succeed - making sure the VM is powered on')
+        _vcfa_vm_power_on(lsf)
+    return True
+
+
+def _auto_name():
+    return 'VCF Automation' if _active('automation_9') else 'Aria Automation'
+
+
+def task_vcf9_urls(lsf, db, ts, dry_run):
+    """Wait for the VCF 9 UIs added by the stage overlay (VCF Operations, identity broker)."""
+    specs = lsf.get_config_list('VCFFINAL', 'vcf9_urls')
+    if not specs:
+        lsf.write_output('No vcf9_urls (lab not upgraded to VCF 9) - skipping VCF 9 UI checks')
+        _set(db, ts, 'vcf_component_urls', 'SKIPPED', 'Not upgraded yet')
+        return True
+    wait_min = _int(lsf, 'vcf9_wait_minutes', 45)
+    required = _bool(lsf, 'vcf9_required', False)
+    if dry_run:
+        lsf.write_output(f'Would check VCF 9 URLs {specs} (wait {wait_min} min, required={required})')
+        return True
+    lsf.write_vpodprogress('VCF 9 components', 'GOOD-8')
+    _set(db, ts, 'vcf_component_urls', 'RUNNING')
+    pending = []
+    for s in specs:
+        url, _, text = s.partition(',')
+        pending.append((url.strip(), text.strip() or None))
+    deadline = time.time() + wait_min * 60
+    while pending and time.time() < deadline:
+        still = []
+        for url, text in pending:
+            if lsf.test_url(url, expected_text=text, timeout=20):
+                lsf.write_output(f'[OK] {url}')
+            else:
+                still.append((url, text))
+        pending = still
+        if pending:
+            lsf.write_output(f'Waiting for VCF 9 components ({len(pending)} URL(s) not answering yet)...')
+            lsf.labstartup_sleep(60)
+    if not pending:
+        _set(db, ts, 'vcf_component_urls', 'COMPLETE')
+        return True
+    msg = f'VCF 9 URL(s) not answering after {wait_min} min: ' + ', '.join(u for u, _ in pending)
+    lsf.write_output(('FATAL: ' if required else 'WARNING: ') + msg)
+    _set(db, ts, 'vcf_component_urls', 'FAILED', msg)
     if required:
         lsf.labfail(msg)
         return False
@@ -564,15 +1031,23 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
     except OSError:
         pass
     lsf.write_output(f'Starting {MODULE_NAME} (ATE-2704 override): {MODULE_DESCRIPTION}')
+    STAGE.clear()
+    STAGE.update(_load_stage(lsf))
     db, ts = _dashboard(lsf)
     for t in NOT_USED:
-        _set(db, ts, t, 'SKIPPED', 'Not used in ATE-2704 (vSphere 8 / VCF 5.2.1 baseline)')
+        if t == 'vcf_component_urls' and lsf.get_config_list('VCFFINAL', 'vcf9_urls'):
+            continue
+        _set(db, ts, t, 'SKIPPED', 'Not used in ATE-2704')
     try:
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
+              and task_stage_report(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
               and task_vks_unpause(lsf, db, ts, dry_run)
+              and task_xregion(lsf, db, ts, dry_run)
               and task_aria_vms(lsf, db, ts, dry_run)
               and task_aria_services(lsf, db, ts, dry_run)
+              and task_vcf9_urls(lsf, db, ts, dry_run)
+              and task_vcfa_fleet_start(lsf, db, ts, dry_run)
               and task_aria_urls(lsf, db, ts, dry_run)
               and task_supervisor_services(lsf, db, ts, dry_run)
               and task_k8s_urls(lsf, db, ts, dry_run))

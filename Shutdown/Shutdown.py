@@ -1,6 +1,26 @@
 #!/usr/bin/env python3
 # Shutdown.py - ATE-2704 lab-specific shutdown wrapper
-# Version 1.0 - 2026-11-04
+# Version 1.2 - 2026-11-15
+#   1.2: Waits for Fleet's "Shutdown component VCF Automation" workflow to
+#        finish (up to 45 min) before the management services runtime is
+#        stopped. In 1.1 the core helper stopped tracking it after ~2 min; the
+#        runtime was then stopped mid-workflow, and the workflow finished when
+#        the runtime came back, powering VCF Automation off after the next
+#        startup. Fleet helpers moved to Startup/ate2704stage.py.
+#   1.1: Upgrade-stage aware. Before anything else it detects which 9.1.1
+#        upgrades the lab has had (Startup/ate2704stage.py) and writes the
+#        matching settings to /tmp/config.ini (built from the original config,
+#        /tmp/config.ini.base or the repo config.ini), so the core shutdown
+#        also stops the new VCF 9 VMs (VCF Operations, the VCF services runtime,
+#        VCF Automation 9.1) and no longer looks for deleted Aria VMs. After the
+#        VCF Automation upgrade the deploy.sh step is skipped, and before the
+#        core shutdown: VCF Automation 9.1 is powered off the documented way,
+#        through the Region B Fleet lifecycle service (= VCF Operations >
+#        Lifecycle > VCF Automation > Power off, KB 444635; fallback: its
+#        runtime's shutdown script), then the management services runtime is
+#        stopped gracefully with Broadcom's vcf_services_runtime_shutdown.sh
+#        --skip-poweroff (KB 440874).
+#   1.0: Aria Automation 8.x services stopped with deploy.sh --shutdown first.
 #
 # Why this wrapper exists
 # -----------------------
@@ -33,7 +53,7 @@
 #
 # Note: the core Shutdown.py does not look for Shutdown overrides itself, so
 # this wrapper must be run directly, not "python3 Shutdown/Shutdown.py" in ~/hol.
-# Remove it once the lab is on VCF 9.x, where the core handles VCF Automation.
+# Keep it after the upgrades: it also applies the upgrade-stage settings (1.1).
 
 import argparse
 import datetime
@@ -88,7 +108,162 @@ def ssh(host, command, password, timeout):
         return None
 
 
+STAGE = {}
+
+
+def stage_prep():
+    """Detect the upgrade stage and write the matching settings to /tmp/config.ini for the core shutdown."""
+    import configparser
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location('ate2704stage', os.path.join(here, '..', 'Startup', 'ate2704stage.py'))
+    stg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stg)
+    log('=' * 70)
+    log('ATE-2704 PRE-SHUTDOWN: upgrade stage')
+    log('=' * 70)
+    stage = stg.detect(lsf)
+    STAGE.update(stage)
+    log('Stage: ' + stg.summary(stage))
+    if stage.get('errors'):
+        log('Detection errors: ' + '; '.join(stage['errors'])[:500])
+    # Always start from the original settings: an upgrade may have happened since the lab started.
+    base = stg.BASE_COPY if os.path.isfile(stg.BASE_COPY) else lsf.configini
+    cfg = configparser.ConfigParser()
+    cfg.read(base)
+    changes = stg.apply_overlay(cfg, stage, log)
+    for c in changes:
+        log('  setting: ' + c)
+    if changes:
+        stg.write_config(cfg, lsf.configini)
+        log(f'Wrote the adjusted settings to {lsf.configini} (original: {stg.BASE_COPY})')
+    elif base == stg.BASE_COPY:
+        import shutil
+        shutil.copy2(base, lsf.configini)
+        log(f'No changes for this stage - restored the original settings to {lsf.configini}')
+    else:
+        log('No changes for this stage - baseline settings apply')
+    lsf.config = cfg
+
+
+VSP_SCRIPT = os.path.join(HOLROOT, 'Tools', 'vcf_services_runtime_shutdown.sh')
+
+
+def _cfg(key):
+    if lsf.config.has_option('SHUTDOWN', key):
+        return [v.strip() for v in lsf.config.get('SHUTDOWN', key).split('\n') if v.strip()]
+    return []
+
+
+def _stg():
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location('ate2704stage', os.path.join(here, '..', 'Startup', 'ate2704stage.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _runtime_script(ip, dry_run):
+    """Broadcom vcf_services_runtime_shutdown.sh --skip-poweroff for one runtime (KB 440874)."""
+    if not os.path.isfile(VSP_SCRIPT):
+        log(f'WARNING - {VSP_SCRIPT} not found; the VMs will only get a guest shutdown')
+        return False
+    if not lsf.test_tcp_port(ip, 5480, timeout=5):
+        log(f'{ip}: management API (5480) not reachable - runtime already down, skipping')
+        return True
+    env = dict(os.environ, VMSP_PASSWORD=lsf.get_password())
+    env.pop('VCENTER_USERNAME', None)
+    env.pop('VCENTER_PASSWORD', None)
+    cmd = [VSP_SCRIPT, '--node-ip', ip, '--skip-poweroff', '--skip-snapshot-check'] + (['--dry-run'] if dry_run else [])
+    log(f'{ip}: running {" ".join(cmd)}')
+    start = datetime.datetime.now()
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line and 'password' not in line.lower():
+                log(f'    {line}')
+        rc = proc.wait(timeout=1800)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        rc = None
+    took = int((datetime.datetime.now() - start).total_seconds())
+    log(f'{ip}: ' + ('done' if rc == 0 else f'WARNING - exit {rc}') + f' after {took}s')
+    return rc == 0
+
+
+def vcfa_prep(dry_run):
+    """Power VCF Automation 9.1 off the documented way before the core shutdown.
+
+    KB 444635: VCF Operations > Build > Lifecycle > VCF Management Components >
+    VCF Automation > Power off = Fleet lifecycle action=shutdown on fleet-01b.
+    Waits until Fleet reports the workflow SUCCEEDED (up to 45 min): the
+    management services runtime that runs the workflow is stopped next, and an
+    unfinished workflow would complete - and power VCF Automation off again -
+    after the next startup. If it fails, VCF Automation's runtime is stopped
+    with Broadcom's runtime script instead (KB 440874). Either way the core
+    Phase 1b then shuts down any VCF Automation VM still running.
+    """
+    fqdn, node, ip = _cfg('vcfa_fleet_lcm_fqdn'), _cfg('vcfa_vsp_node'), _cfg('vcfa_runtime_ip')
+    log('=' * 70)
+    log('ATE-2704 PRE-SHUTDOWN: VCF Automation 9.1 power off (Fleet lifecycle, KB 444635)')
+    log('=' * 70)
+    if not fqdn:
+        log('VCF Automation 9.1 not deployed - skipping')
+        return
+    stg = _stg()
+    fqdn, node = fqdn[0], (node[0] if node else stg.FLEET_VSP_NODE)
+    ok = False
+    try:
+        token = stg.fleet_token(lsf, fqdn, node)
+        comp = stg.fleet_component(token, 'VCFA', fqdn)
+        if not comp:
+            log(f'{fqdn}: no VCFA component found - nothing to power off')
+            return
+        cid = comp.get('componentUuid') or comp.get('id')
+        if dry_run:
+            log(f'{fqdn}: token OK, VCFA component {comp.get("fqdn")} found - would power it off '
+                f'(action=shutdown) and wait for the workflow to finish')
+            return
+        task = stg.fleet_action(token, cid, 'shutdown', fqdn)
+        log(f'{fqdn}: "Shutdown component VCF Automation" started (task {task}); waiting for it to finish')
+        status = stg.fleet_wait(lambda: stg.fleet_token(lsf, fqdn, node), task, 2700, log,
+                                lambda s: __import__('time').sleep(s), fqdn)
+        ok = status == 'SUCCEEDED'
+        log(f'VCF Automation power-off through Fleet: {status}')
+    except Exception as e:
+        log(f'WARNING - Fleet lifecycle power-off failed: {e}')
+    if not ok and ip:
+        log('Falling back to the VCF services runtime shutdown script for VCF Automation')
+        _runtime_script(ip[0], dry_run)
+
+
+def vsp_prep(dry_run):
+    """Gracefully stop the VCF management services runtime ([SHUTDOWN] vsp_prep_ips, KB 440874).
+
+    Runs Broadcom's vcf_services_runtime_shutdown.sh with --skip-poweroff: the
+    system shutdown API scales down all workloads and sets the power-off marker
+    the runtime uses to recover by itself on the next boot. The core Phase 4b
+    then shuts the VMs down. The core Phase 2b would run the same script, but
+    with power-off through govc, which the Manager does not have. Runs after
+    vcfa_prep(), because the Fleet lifecycle service lives on this runtime.
+    """
+    ips = _cfg('vsp_prep_ips')
+    log('=' * 70)
+    log('ATE-2704 PRE-SHUTDOWN: VCF management services runtime (KB 440874, --skip-poweroff)')
+    log('=' * 70)
+    if not ips:
+        log('No VCF services runtime in this lab yet - skipping')
+        return
+    for ip in ips:
+        _runtime_script(ip, dry_run)
+
+
 def aria_prep(dry_run):
+    if STAGE.get('stages', {}).get('automation_9'):
+        log('VCF Automation 9.1 deployed - no Aria Automation 8 services to stop (deploy.sh step skipped)')
+        return
     hosts = []
     if lsf.config.has_option('SHUTDOWN', 'vra_prep_hosts'):
         hosts = [h.strip() for h in lsf.config.get('SHUTDOWN', 'vra_prep_hosts').split('\n')
@@ -142,7 +317,16 @@ def main():
 
     if not (args.help or args.version or args.skip_aria_prep):
         lsf.init(router=False)
+        try:
+            stage_prep()
+        except Exception as e:  # never block the core shutdown
+            log(f'WARNING - stage detection failed ({e}); the core shutdown uses the current settings')
         if wanted(args.phase, args.phases):
+            for step in (vcfa_prep, vsp_prep):
+                try:
+                    step(args.dry_run)
+                except Exception as e:  # never block the core shutdown
+                    log(f'WARNING - {step.__name__} failed: {e}')
             try:
                 aria_prep(args.dry_run)
             except Exception as e:  # never block the core shutdown
