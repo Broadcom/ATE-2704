@@ -96,7 +96,7 @@ are `administrator@vsphere.local`, except for `vc-wld01-b`
 | Location | Contents | Source |
 |---|---|---|
 | `~/Lab Files` | Files the lab guides use (installer JSON specs, helper scripts) and the `Break-Fix Scripts` pack | this repository, `lab-files/`, copied at every startup |
-| `~/Lab Build` | Build and instructor tools: automated Region A upgrades, Region B bring-up spec, VKS demo source, Supervisor certificates, archive | template only, not for students |
+| `~/Lab Build` | Build and instructor tools: automated Region A upgrades, vSAN HCL files, Region B bring-up spec, VKS demo source, Supervisor certificates, archive | template, plus anything in this repository's `lab-build/` (copied at every startup); not for students |
 | `~/DeploymentMedia` | Installation media (vCenter, ESX, VCF Installer bundles, VKS) | template only |
 | Firefox bookmarks toolbar | HOL Admin, Region A and Region B folders for each upgrade stage, VCF Installer | this repository, `console/bookmarks.json`, imported at every startup |
 
@@ -180,7 +180,7 @@ ATE-2704/
 ├── SHUTDOWN.MD                Shutdown procedure
 ├── Startup/
 │   ├── ate2704stage.py        Upgrade-stage detection and the settings for each stage
-│   ├── ate2704labfiles.py     Copies lab-files/ to the console's ~/Lab Files
+│   ├── ate2704labfiles.py     Copies lab-files/ and lab-build/ to the console
 │   ├── VCF.py                 Wrapper around the core VCF.py (stage + lab files)
 │   └── VCFfinal.py            Lab-specific replacement for the core VCFfinal.py
 ├── Shutdown/
@@ -188,6 +188,8 @@ ATE-2704/
 ├── lab-files/                 Mirror of the console's ~/Lab Files (copied at every startup)
 │   ├── *.json, *.sh, *.py, *.pem    Files the lab guides use
 │   └── Break-Fix Scripts/     Student break/fix exercise pack (PowerShell)
+├── lab-build/                 Added to the console's ~/Lab Build (copied at every startup)
+│   └── RegionA/custom_vsan_esa_hcl_9.1.json   vSAN ESA HCL for 9.1 (23 MB, about 1.2 MB in git)
 ├── console/
 │   ├── bookmarks.json         Console Firefox bookmarks (imported at every startup)
 │   └── VMware.config          Lab Status panel position
@@ -210,6 +212,7 @@ The repository uses the HOLFY27 (FY2027) vPodRepo format. At boot,
 | To change | Edit | Takes effect |
 |---|---|---|
 | A script or file students use in `~/Lab Files` | `lab-files/` (add, change or move files; nothing on the console is deleted) | next startup of any lab |
+| A build or instructor file in `~/Lab Build` | `lab-build/` (same rules) | next startup of any lab |
 | The console bookmarks | Edit them in Firefox, then Bookmarks > Manage Bookmarks > Import and Backup > Backup, and replace `console/bookmarks.json` | next startup |
 | What starts and is checked before upgrades | `config.ini` | next startup |
 | What starts and is checked after an upgrade | `OVERLAY` in `Startup/ate2704stage.py` | next startup and shutdown |

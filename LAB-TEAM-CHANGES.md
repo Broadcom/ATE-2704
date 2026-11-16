@@ -9,6 +9,8 @@ New `lab-files/` folder, a mirror of the console's `~/Lab Files`, and new `Start
 
 **To change or add a student file:** edit or add it under `lab-files/` and push. Labs deployed after that get it; no template re-master.
 
+`ate2704labfiles.py` 1.1 mirrors `lab-build/` to `~/Lab Build` the same way (build and instructor files, kept out of the students' folder). First file: `lab-build/RegionA/custom_vsan_esa_hcl_9.1.json`, the vSAN ESA HCL for 9.1 made on lab copy .47 on 2026-11-12 (23 MB; git stores it compressed, about 1.2 MB).
+
 Contents: the files the lab guides use (VVF deployment spec, converge JSON, `wcp-legacy-zone-fix.sh`, `kb425489-endpoint-certs.sh`, `vcf.lab-root-CA.pem`, `vcfa-tenant-to-vcfsso.py`), `supervisor-dns-fix.sh`, and the `Break-Fix Scripts` pack (without its runtime `State/` folder). On the template, `~/Lab Files/LabScripts` was renamed `Break-Fix Scripts`, and the automated Region A upgrade scripts moved from `LabScripts/Upgrades` to `~/Lab Build/RegionA-Upgrades` (build and instructor tools, not for students; `~/Lab Build` is not synced).
 
 Also on the template, everything that is not student or break/fix material moved from `~/Lab Files` to `~/Lab Build` (RegionA, RegionB, VKS-Demo, Supervisor-Certificates, Tools, Archive; list in `~/Lab Build/moved-from-Lab-Files-20261116.txt`). `lab-files/` (47 files) is identical to the template's `~/Lab Files`.

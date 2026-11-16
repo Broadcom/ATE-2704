@@ -1,5 +1,7 @@
 # ate2704labfiles.py - ATE-2704: keep the console's "~/Lab Files" in step with the repo
-# Version 1.0 - 2026-11-16
+# Version 1.1 - 2026-11-16
+#   1.1: also mirrors the repo's lab-build/ to the console's "~/Lab Build"
+#        (build and instructor files, kept out of the students' folder).
 #
 # Why this exists
 # ---------------
@@ -39,6 +41,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, '..', 'lab-files'))
 DEST = '/lmchol/home/holuser/Lab Files'
+# Every (repo folder, console folder) pair that is mirrored.
+PAIRS = [(SRC, DEST),
+         (os.path.normpath(os.path.join(HERE, '..', 'lab-build')), '/lmchol/home/holuser/Lab Build')]
 SKIP_DIRS = {'__pycache__', '.git'}
 SKIP_SUFFIXES = ('.pyc',)
 
@@ -93,11 +98,15 @@ def sync(log=print, dry_run=False, src=SRC, dest=DEST):
 def run(lsf=None, dry_run=False):
     """Startup entry point. Never raises."""
     log = lsf.write_output if lsf else print
-    try:
-        return sync(log, dry_run)
-    except Exception as e:
-        log(f'ATE-2704 lab files: sync failed ({e}) - the template copies stay in place')
-        return [], 0, [str(e)]
+    copied, unchanged, errors = [], 0, []
+    for src, dest in PAIRS:
+        try:
+            c, u, e = sync(log, dry_run, src, dest)
+            copied += c; unchanged += u; errors += e
+        except Exception as e:
+            log(f'ATE-2704 lab files: sync of {src} failed ({e}) - the template copies stay in place')
+            errors.append(str(e))
+    return copied, unchanged, errors
 
 
 if __name__ == '__main__':
