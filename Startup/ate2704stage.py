@@ -1,5 +1,14 @@
 # ate2704stage.py - ATE-2704 upgrade-stage detection and config overlay
-# Version 1.2 - 2026-11-15
+# Version 1.3 - 2026-11-16
+#   1.3: Region A after the VCF Installer (VVF 9.1.1) and after the converge to
+#        VCF 9.1.1, plus the optional NSX overlay / VPC chapter:
+#        region_a_vsp  starts the vsp-01a runtime (KB 440862 order) and stops it
+#                      gracefully (vsp_prep_ips 10.1.1.131); adds opsproxy-01a
+#        region_a_vcf  starts/stops nsx-mgmt-01a and sddcmanager-a, adds checks
+#        region_a_vpc  drops the 10.1.11.x ping/SSH checks once the test VMs
+#                      are on VPC subnets (DHCP addresses)
+#        The runtime nodes of both regions now share one power-on block
+#        (all control planes, one Pause:300, all workers), and vspvms lists both.
 #   1.2: fleet_component() reads the fleet-lcm 'components' list (1.1 expected
 #        'elements' and failed with "'str' object has no attribute 'get'").
 #   1.1: VCF Automation 9.1 is started and stopped only through the Region B
@@ -32,6 +41,9 @@
 #
 # Stages (independent of each other):
 #   region_a_9     Region A upgraded to VVF/VCF 9.1.1 (VMs ops-a / license-server exist)
+#   region_a_vsp   Region A has the VCF services runtime (vsp-01a-* exist; VCF Installer path)
+#   region_a_vcf   Region A converged to VCF 9.1.1 (sddcmanager-a exists)
+#   region_a_vpc   test VMs moved to VPC subnets (user-vm-a/b not on user-network-a)
 #   region_b_9     Region B management domain on VCF 9.1.1 (ops-01b / vsp-01b-* exist)
 #   automation_9   VCF Automation 9.1.1 deployed (auto-int-b-* exists)
 #   wld_9          wld01-b hosts on ESX 9.x (version of esx-05b..08b)
@@ -61,11 +73,15 @@ VC_B = 'vc-mgmt-b.site-b.vcf.lab'
 # Detection rules: a stage is active when any listed VM name (regex, full match) exists.
 STAGE_VMS = {
     'region_a_9': ['ops-a', 'license-server'],
+    'region_a_vsp': [r'vsp-01a-.*'],
+    'region_a_vcf': ['sddcmanager-a'],
     'region_b_9': ['ops-01b', r'vsp-01b-.*'],
     'automation_9': [r'auto-int-b-.*'],
 }
 WLD_HOSTS = ['esx-05b.site-b.vcf.lab', 'esx-06b.site-b.vcf.lab', 'esx-07b.site-b.vcf.lab', 'esx-08b.site-b.vcf.lab']
 MGMT_B_HOSTS = ['esx-01b.site-b.vcf.lab', 'esx-02b.site-b.vcf.lab', 'esx-03b.site-b.vcf.lab', 'esx-04b.site-b.vcf.lab']
+TEST_VMS_A = ['user-vm-a', 'user-vm-b']
+TEST_NET_A = 'user-network-a'
 REGION_A_HOSTS = ['esx-01a.site-a.vcf.lab', 'esx-02a.site-a.vcf.lab', 'esx-03a.site-a.vcf.lab', 'esx-04a.site-a.vcf.lab']
 
 # Old appliances and the host names used for them in TCPServices / URLS.
@@ -77,16 +93,41 @@ OLD_ARIA = {'opslcm-b': 'opslcm-b.site-b.vcf.lab', 'vidm-01b': 'vidm-01b.site-b.
 OVERLAY = {
     'region_a_9': [
         ('VCF', 'vcfpostedgevms', 'add', ['license-server']),
-        ('RESOURCES', 'VMs', 'add', [f'ops-a:{VC_A}']),
+        ('RESOURCES', 'VMs', 'add', [f'ops-a:{VC_A}', f'opsproxy-01a:{VC_A}']),
         ('VCFFINAL', 'vcf9_urls', 'add', ['https://ops-a.site-a.vcf.lab/ui/']),
         ('SHUTDOWN', 'vcf_ops_vms', 'add', ['ops-a']),
+        ('SHUTDOWN', 'vcf_ops_collector_vms', 'add', ['opsproxy-01a']),
+    ],
+    # Region A converged to VCF 9.1.1: its own NSX Manager (started by the core
+    # VCF.py with the others) and SDDC Manager. No Edges: the distributed
+    # transit gateway of the optional overlay chapter runs in the hosts.
+    'region_a_vcf': [
+        ('VCF', 'vcfnsxmgr', 'add', ['nsx-mgmt-01a']),
+        ('RESOURCES', 'VMs', 'add', [f'sddcmanager-a:{VC_A}']),
+        ('RESOURCES', 'TCPServices', 'add', ['sddcmanager-a.site-a.vcf.lab:443', 'nsx-mgmt-a.site-a.vcf.lab:443',
+                                             'nsx-mgmt-01a.site-a.vcf.lab:443']),
+        ('RESOURCES', 'URLS', 'add', ['https://sddcmanager-a.site-a.vcf.lab/ui/', 'https://nsx-mgmt-a.site-a.vcf.lab/']),
+        ('SHUTDOWN', 'sddc_manager_vms', 'add', ['sddcmanager-a']),
+    ],
+    # Region A VCF services runtime (deployed by the VCF Installer with VVF 9.1.1).
+    'region_a_vsp': [
+        ('VCF', 'vspvms', 'add', [f'vsp-01a-.*:{VC_A}']),
+        ('RESOURCES', 'VMs', 'add', [f'@vsp-01a-|{VC_A}']),
+        ('SHUTDOWN', 'vsp_prep_ips', 'add', ['10.1.1.131']),
+    ],
+    # Optional NSX overlay chapter: the test VMs get DHCP addresses on VPC
+    # subnets (one only reachable through an external IP), so the baseline
+    # 10.1.11.x checks would never pass.
+    'region_a_vpc': [
+        ('RESOURCES', 'Pings', 'remove', ['10.1.11.130', '10.1.11.131']),
+        ('RESOURCES', 'TCPServices', 'remove', ['user-vm-a.site-a.vcf.lab:22', 'user-vm-b.site-a.vcf.lab:22']),
     ],
     'region_b_9': [
         ('VCF', 'vcfpostedgevms', 'add', ['license-b']),
-        ('VCF', 'vspvms', 'set', [f'vsp-01b-.*:{VC_B}']),
+        ('VCF', 'vspvms', 'add', [f'vsp-01b-.*:{VC_B}']),
         # VCF services runtime: control plane node first, 5 minutes, then the workers
         # (KB 440862). '@vsp-01b-' is expanded by apply_overlay() from the VMs found.
-        ('RESOURCES', 'VMs', 'add', ['@vsp-01b-', f'ops-01b:{VC_B}', f'opsproxy-01b:{VC_B}']),
+        ('RESOURCES', 'VMs', 'add', [f'@vsp-01b-|{VC_B}', f'ops-01b:{VC_B}', f'opsproxy-01b:{VC_B}']),
         ('VCFFINAL', 'vcf9_urls', 'add', ['https://ops-01b.site-b.vcf.lab/ui/',
                                            'https://vidb-b.site-b.vcf.lab/acs/t/CUSTOMER/.well-known/openid-configuration,issuer']),
         ('SHUTDOWN', 'vcf_ops_vms', 'add', ['ops-01b']),
@@ -168,7 +209,8 @@ def _esx_inventory(hosts, user, password, log):
                     # A VM can be registered on several hosts; keep the powered-on registration.
                     if vms.get(vm.name, {}).get('power') != 'poweredOn':
                         hw = vm.config.hardware if vm.config else None
-                        vms[vm.name] = {'power': st, 'mem_mb': hw.memoryMB if hw else 0}
+                        vms[vm.name] = {'power': st, 'mem_mb': hw.memoryMB if hw else 0,
+                                        'networks': [n.name for n in vm.network]}
                 except Exception:
                     pass
         finally:
@@ -194,6 +236,9 @@ def detect(lsf, hosts=None):
     wld = [versions.get(h, '') for h in WLD_HOSTS if h in versions]
     stage['stages']['wld_9'] = bool(wld) and all(v.split('.')[0].isdigit() and int(v.split('.')[0]) >= 9 for v in wld)
     stage['evidence']['wld_9'] = wld
+    nets = {n: vms[n].get('networks', []) for n in TEST_VMS_A if n in vms}
+    stage['stages']['region_a_vpc'] = bool(nets) and any(TEST_NET_A not in v for v in nets.values())
+    stage['evidence']['region_a_vpc'] = nets
     stage['old_aria_present'] = [n for n in ('opslcm-b', 'vidm-01b', 'auto-01b') if n in vms]
     stage['vm_names'] = names
     stage['vm_mem_mb'] = {n: v.get('mem_mb', 0) for n, v in vms.items()}
@@ -202,7 +247,9 @@ def detect(lsf, hosts=None):
 
 def summary(stage):
     s = stage.get('stages', {})
-    parts = [f"Region A {'9.1' if s.get('region_a_9') else '8.0 U3 (not upgraded)'}",
+    ra = ('VCF 9.1 (converged)' if s.get('region_a_vcf') else 'VVF 9.1' + (' + services runtime' if s.get('region_a_vsp') else '')
+          ) if s.get('region_a_9') else '8.0 U3 (not upgraded)'
+    parts = [f"Region A {ra}" + (', test VMs on VPC subnets' if s.get('region_a_vpc') else ''),
              f"Region B mgmt {'VCF 9.1' if s.get('region_b_9') else 'VCF 5.2.1 (not upgraded)'}",
              f"Automation {'VCF Automation 9.1' if s.get('automation_9') else 'Aria Automation 8.18.1'}",
              f"wld01-b ESX {'9.x' if s.get('wld_9') else '8.0 U3'}"]
@@ -211,23 +258,30 @@ def summary(stage):
     return '; '.join(parts)
 
 
-def _expand(values, stage, vc=VC_B):
-    """Expand '@<prefix>' into the runtime nodes in KB 440862 power-on order:
-    control plane node(s) (the smallest by memory) first, Pause:300, then the workers."""
-    out = []
+def _expand(values, stage):
+    """Expand '@<prefix>|<vcenter>' entries into VCF services runtime nodes in KB 440862
+    power-on order. All runtimes share one block, at the place of the first '@' entry:
+    every control plane node (the smallest node of each runtime by memory), one
+    Pause:300, then every worker."""
     mem = stage.get('vm_mem_mb', {})
+    cps, workers, out, at = [], [], [], None
     for v in values:
         if not v.startswith('@'):
             out.append(v)
             continue
-        nodes = sorted(n for n in stage.get('vm_names', []) if n.startswith(v[1:]))
+        prefix, _, vc = v[1:].partition('|')
+        vc = vc or VC_B
+        if at is None:
+            at = len(out)
+        nodes = sorted(n for n in stage.get('vm_names', []) if n.startswith(prefix))
         if not nodes:
             continue
         small = min(mem.get(n, 0) for n in nodes)
-        cps = [n for n in nodes if mem.get(n, 0) == small]
-        workers = [n for n in nodes if n not in cps]
-        out += [f'{n}:{vc}' for n in cps] + (['Pause:300'] if workers else []) + [f'{n}:{vc}' for n in workers]
-    return out
+        cps += [f'{n}:{vc}' for n in nodes if mem.get(n, 0) == small]
+        workers += [f'{n}:{vc}' for n in nodes if mem.get(n, 0) != small]
+    if at is None:
+        return out
+    return out[:at] + cps + (['Pause:300'] if workers else []) + workers + out[at:]
 
 
 def apply_overlay(cfg, stage, log=print):
@@ -238,21 +292,31 @@ def apply_overlay(cfg, stage, log=print):
         log('Stage detection incomplete - keeping the baseline config.ini unchanged')
         return changes
     names = stage.get('vm_names', [])
-    for st, active in stage['stages'].items():
-        if not active or st not in OVERLAY:
+    # Combine the 'add' values of all active stages per setting first, so that the
+    # runtime nodes of both regions end up in one power-on block (see _expand).
+    ops = []
+    for st in OVERLAY:
+        if not stage['stages'].get(st):
             continue
         for sec, opt, op, vals in OVERLAY[st]:
-            vals = _expand(vals, stage)
-            cur = _lines(cfg, sec, opt)
-            if op == 'set':
-                new = list(vals)
-            elif op == 'add':
-                new = cur + [v for v in vals if v not in cur]
-            else:  # remove
-                new = [c for c in cur if not any(c == v or _vm_name(c) == v or v in c for v in vals)]
-            if new != cur or (op == 'set' and not cfg.has_option(sec, opt)):
-                _store(cfg, sec, opt, new)
-                changes.append(f'[{sec}] {opt} ({st}): {", ".join(new) if new else "(empty)"}')
+            prev = next((o for o in ops if op == 'add' and o[2] == 'add' and o[:2] == [sec, opt]), None)
+            if prev:
+                prev[3] = prev[3] + [v for v in vals if v not in prev[3]]
+                prev[4] += ',' + st
+            else:
+                ops.append([sec, opt, op, list(vals), st])
+    for sec, opt, op, vals, st in ops:
+        vals = _expand(vals, stage)
+        cur = _lines(cfg, sec, opt)
+        if op == 'set':
+            new = list(vals)
+        elif op == 'add':
+            new = cur + [v for v in vals if v not in cur]
+        else:  # remove
+            new = [c for c in cur if not any(c == v or _vm_name(c) == v or v in c for v in vals)]
+        if new != cur or (op == 'set' and not cfg.has_option(sec, opt)):
+            _store(cfg, sec, opt, new)
+            changes.append(f'[{sec}] {opt} ({st}): {", ".join(new) if new else "(empty)"}')
     # Drop entries for VMs that do not exist (e.g. deleted vIDM / Suite Lifecycle / old auto-01b).
     for sec, opt in VM_LISTS:
         cur = _lines(cfg, sec, opt)

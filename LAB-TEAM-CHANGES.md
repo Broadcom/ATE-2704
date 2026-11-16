@@ -3,6 +3,12 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-16: Region A after the VCF Installer, the converge and the overlay chapter
+
+`Startup/ate2704stage.py` 1.3 adds three Region A stages (`region_a_vsp`, `region_a_vcf`, `region_a_vpc`, see the table below). Before this, a Region A upgraded with the VCF Installer would not start its `vsp-01a` runtime after a cold start, and a converged Region A would not start `nsx-mgmt-01a` or `sddcmanager-a`. The `add` changes of all stages are now merged per setting, so both runtimes share one power-on block (all control plane nodes, one `Pause:300`, all workers), and `[VCF] vspvms` lists both regions.
+
+Tested 2026-11-16 on the converged lab copy (.32): detection, the new port/URL checks, `Shutdown.py --dry-run` (Region A runtime script dry run authenticated; VSP, VCF Operations, proxy, NSX and SDDC Manager phases list the Region A VMs) and `VCF.py --standalone --dry-run`. Template .24 (not upgraded): no changes. A real shutdown and cold start of a converged lab is not tested yet.
+
 ## 2026-11-15: upgrade-stage aware startup and shutdown
 
 **Problem.** `config.ini` describes the delivered lab. After attendees upgrade
@@ -26,7 +32,10 @@ Stages and what they change (see `OVERLAY` in `ate2704stage.py`):
 
 | Stage | Detected by | Startup / shutdown changes |
 |---|---|---|
-| `region_a_9` | VM `ops-a` or `license-server` exists | start `license-server` (post-Edge) and `ops-a`; wait for its UI; shut down `ops-a` in the VCF Operations phase |
+| `region_a_9` | VM `ops-a` or `license-server` exists | start `license-server` (post-Edge), `ops-a` and `opsproxy-01a` (if present); wait for its UI; shut down `ops-a` and its proxy in the VCF Operations phases |
+| `region_a_vsp` | VM `vsp-01a-*` exists (VCF Installer path) | start the `vsp-01a` control plane node, 5 min pause, then its workers (KB 440862; shares the pause with `vsp-01b` when both exist); stop the runtime gracefully on 10.1.1.131 (KB 440874); VSP shutdown phase |
+| `region_a_vcf` | VM `sddcmanager-a` exists (converged to VCF 9.1.1) | start and stop `nsx-mgmt-01a` with the other NSX Managers and `sddcmanager-a` with the other SDDC Manager; check `sddcmanager-a`, `nsx-mgmt-a` and `nsx-mgmt-01a` on 443 and their UIs |
+| `region_a_vpc` | `user-vm-a` or `user-vm-b` not on `user-network-a` (optional NSX overlay chapter) | drop the 10.1.11.130/131 pings and the SSH checks of the test VMs, which now have DHCP addresses on VPC subnets |
 | `region_b_9` | VM `ops-01b` or `vsp-01b-*` exists | start `license-b`; the `vsp-01b` control plane node, 5 min pause, then its workers (KB 440862); `ops-01b`, `opsproxy-01b`; wait for VCF Operations and the identity broker (the runtime needs 15-20 min to recover); shutdown phases for VCF Operations, its proxy and the VSP nodes |
 | `automation_9` | VM `auto-int-b-*` exists | never start `auto-01b`; start VCF Automation 9.1 through Fleet once the management runtime is back, then check it; no `deploy.sh`; drop the 10.2.12.151 ping; shutdown powers VCF Automation off through Fleet first and waits for that to finish |
 | `wld_9` | ESX 9.x on esx-05b..08b | reported only |
