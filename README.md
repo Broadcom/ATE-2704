@@ -140,7 +140,8 @@ baseline `config.ini` is used, as before.
    in the order Broadcom documents.
 3. **`Startup/VCFfinal.py`** (replaces the core module) reports the stage, the
    `wld01-b` import and upgrade state and the Supervisor. It heals the Region B
-   Edge tunnels if needed, starts the Aria Automation 8 services or, after the
+   Edge tunnels if needed, reconnects any VKS or Supervisor VM whose NSX
+   network adapter failed at power-on, starts the Aria Automation 8 services or, after the
    upgrade, VCF Automation 9.1 through Fleet. It then waits for the Supervisor,
    its services, the VKS cluster and the VCF 9 user interfaces before the lab
    reports Ready.

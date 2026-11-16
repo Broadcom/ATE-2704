@@ -1,7 +1,7 @@
 # local/ — per-instance runtime state (external IP, access notes, working files)
 # Not committed — each engineer keeps their own copy.
 local/
-.DS_Stor
+.DS_Store
 .claude
 
 # Local session checkpoints

@@ -1,5 +1,14 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.8 - 2026-11-15
+# Version 1.9 - 2026-11-16
+#   1.9: Task 1d heals VKS / Supervisor VMs whose NSX network adapter failed at
+#        power-on. On fresh copies of the 2026-11-16 template (.26, .45) the
+#        vks-01 control plane VM on esx-06b started with its adapter
+#        disconnected ("Failed to connect port to opaque network: Not found":
+#        the host's local NSX database had no entry for that VM's port), so the
+#        VKS cluster API and the voting app stayed down. The Supervisor blocks
+#        reconnecting or moving its VMs through vCenter, so Task 1d puts the
+#        host into maintenance mode (DRS moves the VMs off), reconnects the
+#        adapter on the new host with vim-cmd, and takes the host out again.
 #   1.8: Task 3a retries the Fleet start for up to 15 minutes when Fleet answers
 #        with a server error. On the second cold-start test Fleet's login worked
 #        a minute after the management runtime recovered, but its Fleet Build
@@ -85,6 +94,12 @@
 #           still not answering after xregion_restart_minutes, restart its
 #           guest OS once (VM from xregion_vms). Runs before the Aria
 #           Automation tasks, because deploy.sh needs Workspace ONE Access.
+#   Task 1d VKS / Supervisor network adapters (vks_nic_heal): find powered-on
+#           VMs on the Supervisor vCenter whose NSX adapter failed to connect at
+#           power-on (connected=false, status unrecoverableError). Put their host
+#           into maintenance mode so DRS moves them, reconnect the adapter on the
+#           new host (vim-cmd over SSH; the Supervisor blocks it in vCenter),
+#           then exit maintenance mode. Never fails the lab.
 #   Task 4  Supervisor Services (supervisor_services): wait until each listed
 #           service reports CONFIGURED on the Supervisor.
 #   Task 5  Kubernetes URLs (k8s_urls, "url,expected text"): Harbor, Argo CD,
@@ -100,6 +115,8 @@
 #   vraurl_wait_minutes  (default 35)    Aria Automation URL wait
 #   vraurls_required     (default true)  fail the lab if a URL never answers
 #   vks_unpause          (default true)  Task 1b on/off
+#   vks_nic_heal         (default true)  Task 1d on/off
+#   vks_nic_heal_minutes (default 25)    maintenance-mode time limit per host
 #   supervisor_services  (none)          service IDs that must be CONFIGURED
 #   k8s_urls             (none)          url,expected text
 #   k8s_wait_minutes     (default 30)    wait for Tasks 4 and 5
@@ -458,6 +475,109 @@ def task_vks_unpause(lsf, db, ts, dry_run):
             rc, out = _appliance_ssh(lsf, ip, f"kubectl patch clusters.cluster.x-k8s.io {name} -n {ns} --type merge "
                                               f"-p '{{\"spec\":{{\"paused\":false}}}}'", timeout=60, password=pw)
             lsf.write_output(f'VKS cluster {ns}/{name}: ' + ('un-paused' if rc == 0 else f'WARNING - un-pause failed ({out.strip()[:200]})'))
+    return True
+
+
+def _failed_nsx_nics(vm):
+    """Network adapters of a powered-on VM that should be connected but failed at power-on."""
+    from pyVmomi import vim
+    out = []
+    try:
+        if vm.runtime.powerState != 'poweredOn' or not vm.config:
+            return out
+        for d in vm.config.hardware.device:
+            if isinstance(d, vim.vm.device.VirtualEthernetCard) and d.connectable and d.connectable.startConnected \
+                    and not d.connectable.connected and d.connectable.status == 'unrecoverableError' and d.externalId:
+                out.append(d)
+    except Exception:
+        pass
+    return out
+
+
+def _wait_task(task, seconds):
+    for _ in range(int(seconds / 5)):
+        if task.info.state in ('success', 'error'):
+            break
+        time.sleep(5)
+    return task.info.state
+
+
+def task_vks_nic_heal(lsf, db, ts, dry_run):
+    """Reconnect VKS / Supervisor VM adapters that failed to attach to their NSX port at power-on.
+
+    Seen on fresh copies of the template: the vks-01 control plane VM on esx-06b
+    powered on with "Failed to connect port to opaque network: Not found" and
+    stayed disconnected. vCenter refuses to reconnect or move Supervisor-managed
+    VMs, so the host goes into maintenance mode (DRS moves the VMs), the adapter
+    is reconnected on the new host with vim-cmd, and the host leaves maintenance
+    mode again. Never fails the lab.
+    """
+    import ssl
+    if not _bool(lsf, 'vks_nic_heal', True):
+        return True
+    vcs = _tanzu_vcenters(lsf)
+    if not vcs:
+        return True
+    users = _sso_users(lsf)
+    limit = _int(lsf, 'vks_nic_heal_minutes', 25) * 60
+    from pyVim.connect import SmartConnect, Disconnect
+    from pyVmomi import vim
+    for vc in vcs:
+        try:
+            si = SmartConnect(host=vc, user=users.get(vc, 'administrator@vsphere.local'), pwd=lsf.get_password(),
+                              sslContext=ssl._create_unverified_context())
+        except Exception as e:
+            lsf.write_output(f'VKS adapter check: cannot connect to {vc} ({e}) - skipped')
+            continue
+        try:
+            view = si.content.viewManager.CreateContainerView(si.content.rootFolder, [vim.VirtualMachine], True)
+            bad = [(vm, nics) for vm in view.view for nics in [_failed_nsx_nics(vm)] if nics]
+            if not bad:
+                lsf.write_output(f'VKS adapter check on {vc}: all Supervisor / VKS adapters connected')
+                continue
+            by_host = {}
+            for vm, nics in bad:
+                by_host.setdefault(vm.runtime.host, []).append((vm, nics))
+                lsf.write_output(f'VKS adapter check: {vm.name} on {vm.runtime.host.name}: '
+                                 + ', '.join(n.deviceInfo.label for n in nics) + ' failed to connect at power-on')
+            if dry_run:
+                lsf.write_output('Would move these VMs off their host (maintenance mode) and reconnect the adapters')
+                continue
+            lsf.write_vpodprogress('VKS adapters', 'GOOD-8')
+            for host, items in by_host.items():
+                hn = host.name
+                lsf.write_output(f'  {hn}: entering maintenance mode so DRS moves {", ".join(v.name for v, _ in items)}')
+                spec = vim.host.MaintenanceSpec(vsanMode=vim.vsan.host.DecommissionMode(objectAction='ensureObjectAccessibility'))
+                task = host.EnterMaintenanceMode_Task(timeout=0, evacuatePoweredOffVms=False, maintenanceSpec=spec)
+                state = _wait_task(task, limit)
+                if state != 'success':
+                    lsf.write_output(f'  WARNING: {hn} maintenance mode {state} ({task.info.error.msg if task.info.error else "time limit"})')
+                    if state not in ('success', 'error'):
+                        try:
+                            task.CancelTask()
+                        except Exception:
+                            pass
+                for vm, nics in items:
+                    new = vm.runtime.host.name
+                    if new == hn:
+                        lsf.write_output(f'  WARNING: {vm.name} is still on {hn} - not reconnected')
+                        continue
+                    for n in nics:
+                        cmd = (f"id=$(vim-cmd vmsvc/getallvms 2>/dev/null | awk '$2==\"{vm.name}\"{{print $1}}'); "
+                               f"vim-cmd vmsvc/device.connection $id {n.key} 1")
+                        rc, out = _appliance_ssh(lsf, new, cmd, timeout=90)
+                        lsf.write_output(f'  {vm.name} on {new}: {n.deviceInfo.label} '
+                                         + ('reconnected' if rc == 0 else f'WARNING - reconnect failed ({(out or "").strip()[:200]})'))
+                if host.runtime.inMaintenanceMode or state not in ('success', 'error'):
+                    st = _wait_task(host.ExitMaintenanceMode_Task(timeout=0), 600)
+                    lsf.write_output(f'  {hn}: exit maintenance mode {st}')
+        except Exception as e:
+            lsf.write_output(f'WARNING: VKS adapter heal on {vc} failed: {e}')
+        finally:
+            try:
+                Disconnect(si)
+            except Exception:
+                pass
     return True
 
 
@@ -1049,6 +1169,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
               and task_vcf9_urls(lsf, db, ts, dry_run)
               and task_vcfa_fleet_start(lsf, db, ts, dry_run)
               and task_aria_urls(lsf, db, ts, dry_run)
+              and task_vks_nic_heal(lsf, db, ts, dry_run)
               and task_supervisor_services(lsf, db, ts, dry_run)
               and task_k8s_urls(lsf, db, ts, dry_run))
         if ok and not dry_run:
