@@ -3,6 +3,14 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-16: VKS adapter heal (VCFfinal 1.9, Task 1d)
+
+**Problem.** On fresh copies of the 2026-11-16 template (.26 and .45; not on .24 itself) the `vks-01` control plane VM on `esx-06b` powered on with its network adapter disconnected: `Failed to connect port to opaque network: Not found`. NSX Manager had the port (DOWN, unbound) and the segment, and the host's NSX control and management connections were UP, but `esx-06b`'s local NSX database (NestDB) had no entry for that VIF; on .24 it had one. ESX does not retry, so the VKS cluster API and the voting app stayed down and the startup reported Ready after the 30-minute Kubernetes wait. Restarting `nsx-opsagent` / `nsx-proxy` on the host did not help. The Supervisor blocks reconnecting or moving its VMs through vCenter (`VirtualMachine.Interact.DeviceConnection`, relocate denied).
+
+**Fix.** `Startup/VCFfinal.py` 1.9 adds Task 1d, run before the Supervisor Services and Kubernetes checks: it finds powered-on VMs on the Supervisor vCenter whose NSX adapter should be connected but failed at power-on (`unrecoverableError`), puts their host into maintenance mode (vSAN: ensure accessibility) so DRS moves them, reconnects the adapter on the new host with `vim-cmd vmsvc/device.connection` over SSH, and exits maintenance mode. Never fails the lab. Settings: `[VCFFINAL] vks_nic_heal` (default true), `vks_nic_heal_minutes` (default 25).
+
+**Tested** on .45: detected the failed adapter, `esx-06b` maintenance mode, VM moved to `esx-05b`, adapter reconnected, host back out in 2.5 minutes; the VKS API answered 4 minutes later and the voting app a minute after that; the lab then reached Ready. The root cause of the missing NestDB entry on deployed copies is not known yet.
+
 ## 2026-11-16: console "~/Lab Files" from the repo
 
 New `lab-files/` folder, a mirror of the console's `~/Lab Files`, and new `Startup/ate2704labfiles.py`, called by `Startup/VCF.py` 1.1 at every startup. Each file in `lab-files/` is copied to the same path under `~/Lab Files` if it is missing or its content differs; the executable bit follows the repo. Nothing is deleted: files only in the template (large or build-only files, students' own files) stay. A failure is logged and never stops the startup.
