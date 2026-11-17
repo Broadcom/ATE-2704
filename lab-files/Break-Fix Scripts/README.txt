@@ -54,22 +54,25 @@ VALIDATION
 Test-LabScripts.ps1 parses every PowerShell file and runs every pair with
 -WhatIf. -ReadOnly additionally inspects actual targets and original values;
 it still does not create faults. The accompanying validation receipt states
-what was tested. A full break/fix cycle has not been run on the live lab.
+what was tested. A full break/fix cycle has not been run on the live lab for 02, 03 and 05-10.
+01, 04, 11, 13 and 14 were run Break and Fix on Region B mgmt-b on 2026-11-17.
 
 SCENARIOS
-| `01-NtpStopped` | ESXi NTP service stopped | `esx-04a.site-a.vcf.lab` | One host loses time synchronization; drift develops over time, not immediately. |
+| `01-NtpStopped` | ESXi NTP service stopped and host clock drifted | `esx-04b.site-b.vcf.lab` | NTP stopped with a manual startup policy, and the clock is set 10 minutes ahead (`ClockSkewMinutes`); vSAN health warns at once. |
 | `02-WrongHostDns` | ESXi DNS points to an invalid resolver | `esx-04a.site-a.vcf.lab` | Hostname resolution and DNS-related readiness checks fail on one host. |
 | `03-VmotionDisabled` | vMotion disabled on its VMkernel interface | `esx-04a.site-a.vcf.lab` | Migrations involving this host and upgrade evacuation can fail. |
-| `04-DrsManual` | DRS changed to manual | `cluster-mgmt-01a` | Automatic placement and evacuation require intervention. |
+| `04-DrsManual` | DRS changed to manual | `cluster-mgmt-01b` | Automatic placement and evacuation require intervention; the SDDC Manager precheck fails its DRS and maintenance-mode dry-run checks. |
 | `05-VmNicDisconnected` | Disposable VM NIC disconnected | `user-vm-a` | user-vm-a loses connectivity immediately and after power cycling. |
 | `06-WrongVmNetwork` | Disposable VM attached to the wrong portgroup | `user-vm-b` | The NIC stays connected but the static guest address is on the wrong VLAN. |
 | `07-VmCpuLimit` | Restrictive 100 MHz VM CPU limit | `user-vm-a` | Guest becomes sluggish despite apparent host CPU headroom. |
 | `08-LeftoverSnapshot` | Snapshot left for pre-upgrade hygiene review | `user-vm-b` | A new disk-only snapshot appears. This is a hygiene exercise, not a universal hardware-upgrade blocker. |
 | `09-EdgeUplinkVlanMissing` | BGP uplink VLAN missing from Edge trunk | `edge-uplink1-vds01-wld01-01b` | VLAN 49 is removed from uplink 1; TEP VLAN 48 and uplink 2 remain. Expect two external BGP sessions down. |
 | `10-WorkloadBgpDisabled` | Workload Tier-0 BGP disabled | `t0-wld01-b` | HIGH IMPACT: all four external BGP sessions drop. Workload north-south and Supervisor load-balancer access fail. Recover through the management NSX endpoint. |
+| `13-HostPasswordDrift` | ESXi root password changed outside SDDC Manager | `esx-03b.site-b.vcf.lab` | Root gets `DriftPassword`; SDDC Manager still holds the lab password, so its SoS health check (and any upgrade) cannot log in. Fix resets it through vCenter and updates SDDC Manager's stored password. |
+| `14-HostMaintenanceMode` | ESXi host left in maintenance mode | `esx-02b.site-b.vcf.lab` | The host runs no VMs (vSAN: ensure accessibility). Only the vSphere Client shows it. |
 
 STUDENT INVESTIGATION HINTS
-01: ESXi time settings, NTP service policy/running state, configured peers.
+01: ESXi time settings, NTP service policy/running state, configured peers; vSAN Skyline Health time check.
 02: ESXi DNS configuration and forward/reverse name resolution.
 03: VMkernel service bindings, migration compatibility and evacuation errors.
 04: Cluster DRS mode and unapplied migration recommendations.
@@ -79,6 +82,8 @@ STUDENT INVESTIGATION HINTS
 08: Snapshot inventory, owner/purpose/age and consolidation planning. This is hygiene, not a universal hard upgrade blocker.
 09: Correlate BGP neighbor state, VLAN 49, Edge data NICs and allowed trunk VLANs.
 10: Check Tier-0 global BGP administrative state before investigating neighbor authentication or router reachability.
+13: SoS health check Password Expiry Status; a root login with the lab password. SDDC Manager's Password Management page still shows Active. ESXi locks root for 15 minutes after 5 failed logins.
+14: Host state in the vSphere Client inventory and Home page.
 
 ADDITIONAL STUDENT SECURITY EXERCISES
 

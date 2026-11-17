@@ -9,11 +9,10 @@ function Save-LabState($Path, $State) {
     if (-not $IsWindows) { & chmod 600 -- $temp }
     Move-Item -LiteralPath $temp -Destination $Path -Force
 }
-function Connect-LabTarget($Config, $Scenario, [pscredential]$Credential) {
-    if ($Scenario.Kind -eq 'NsxBgp') {
-        if (-not $Credential) { $Credential = Get-Credential -UserName 'admin' -Message 'NSX workload Manager credential' }
-        if (-not ('LabScripts.PinnedClient' -as [type])) {
-            Add-Type -TypeDefinition @'
+function Initialize-LabPinnedClient {
+    # HttpClient that only trusts one certificate, identified by its SHA-256 hash.
+    if (-not ('LabScripts.PinnedClient' -as [type])) {
+        Add-Type -TypeDefinition @'
 using System;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -30,7 +29,58 @@ namespace LabScripts {
  }
 }
 '@
-        }
+    }
+}
+function Get-LabRootPassword($Context) {
+    # Which password the host's root account accepts: 'Drift', 'Lab' or 'Unknown'.
+    # ESXi locks root for 15 minutes after 5 failed logins, so each check tries the
+    # password that is most likely right first and stops at the first success.
+    $lab = $Context.Credential.GetNetworkCredential().Password
+    $drift = [string]$Context.Scenario.DriftPassword
+    $order = if ($Context.ContainsKey('ExpectDrift') -and $Context.ExpectDrift) { @(@('Drift',$drift), @('Lab',$lab)) } else { @(@('Lab',$lab), @('Drift',$drift)) }
+    foreach ($o in $order) { if (Test-LabRootLogin $Context $o[1]) { return $o[0] } }
+    return 'Unknown'
+}
+function Test-LabRootLogin($Context, [string]$pw) {
+    # True when the host accepts root with this password. Uses basic auth on the host's
+    # /folder page, trusting only the host certificate that vCenter holds for this host.
+    Initialize-LabPinnedClient
+    $name = $Context.Host.Name
+    $pem = [Text.Encoding]::ASCII.GetString([byte[]]$Context.Host.ExtensionData.Config.Certificate)
+    $der = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($pem).RawData
+    $pin = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($der))
+    $http = [LabScripts.PinnedClient]::Create($name, $pin)
+    try {
+        $req = [Net.Http.HttpRequestMessage]::new('GET', "https://$name/folder?dcPath=ha-datacenter")
+        $req.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Basic', [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("root:$pw")))
+        $code = [int]$http.SendAsync($req).GetAwaiter().GetResult().StatusCode
+        if ($code -eq 200) { return $true }
+        if ($code -eq 401) { return $false }
+        throw "Unexpected HTTP $code from $name while checking the root login."
+    } finally { $http.Dispose() }
+}
+function Sync-LabSddcCredential($Scenario, [pscredential]$Credential) {
+    # After the host password is back to the lab password, tell SDDC Manager the same password
+    # (Password Management > Remediate). Needed when the student remediated SDDC Manager with the
+    # drifted password in the meantime; harmless otherwise.
+    if (-not $Scenario.ContainsKey('SddcManager') -or -not $Scenario.SddcManager) { return }
+    $base = 'https://' + $Scenario.SddcManager
+    $pw = $Credential.GetNetworkCredential().Password
+    $tok = (Invoke-RestMethod -Method Post -Uri "$base/v1/tokens" -ContentType 'application/json' -Body (@{ username=$Credential.UserName; password=$pw } | ConvertTo-Json)).accessToken
+    $h = @{ Authorization = "Bearer $tok" }
+    $body = @{ operationType='REMEDIATE'; elements=@(@{ resourceName=$Scenario.Target; resourceType='ESXI'; credentials=@(@{ credentialType='SSH'; username='root'; password=$pw }) }) } | ConvertTo-Json -Depth 6
+    $task = Invoke-RestMethod -Method Patch -Uri "$base/v1/credentials" -Headers $h -ContentType 'application/json' -Body $body
+    for ($i = 0; $i -lt 60; $i++) {
+        Start-Sleep -Seconds 10
+        $t = Invoke-RestMethod -Uri "$base/v1/credentials/tasks/$($task.id)" -Headers $h
+        if ($t.status -in 'SUCCESSFUL','FAILED','CANCELLED') { break }
+    }
+    if ($t.status -ne 'SUCCESSFUL') { Write-Warning "SDDC Manager credential remediation for $($Scenario.Target) ended $($t.status); check Security > Password Management." }
+}
+function Connect-LabTarget($Config, $Scenario, [pscredential]$Credential) {
+    if ($Scenario.Kind -eq 'NsxBgp') {
+        if (-not $Credential) { $Credential = Get-Credential -UserName 'admin' -Message 'NSX workload Manager credential' }
+        Initialize-LabPinnedClient
         $uri = [uri]$Config.Nsx.BaseUri
         $http = [LabScripts.PinnedClient]::Create($uri.Host, $Config.Nsx.CertificateSha256)
         $bytes = [Text.Encoding]::UTF8.GetBytes($Credential.UserName + ':' + $Credential.GetNetworkCredential().Password)
@@ -52,11 +102,13 @@ namespace LabScripts {
         $owned = $true
     }
     if ($vi.Count -ne 1 -or $vi[0].InstanceUuid -ne $target.InstanceUuid) { throw 'vCenter identity mismatch; refusing lab mutation.' }
-    $ctx = @{ VI=$vi[0]; Owned=$owned; Scenario=$Scenario; Config=$Config }
+    $ctx = @{ VI=$vi[0]; Owned=$owned; Scenario=$Scenario; Config=$Config; Credential=$Credential }
     switch ($Scenario.Kind) {
-        { $_ -in 'Ntp','Dns','Vmotion' } {
+        { $_ -in 'Ntp','Dns','Vmotion','HostPassword','Maintenance' } {
             $ctx.Host = Get-VMHost -Name $Scenario.Target -Server $ctx.VI -ErrorAction Stop
-            if ($ctx.Host.ConnectionState -ne 'Connected') { throw 'Target host is not connected.' }
+            # The maintenance-mode exercise must still reach its host while it is in maintenance mode.
+            $okStates = if ($Scenario.Kind -eq 'Maintenance') { @('Connected','Maintenance') } else { @('Connected') }
+            if ([string]$ctx.Host.ConnectionState -notin $okStates) { throw 'Target host is not connected.' }
             if ($Scenario.Kind -eq 'Vmotion') {
                 $ctx.Vmk = @(Get-VMHostNetworkAdapter -VMHost $ctx.Host -VMKernel | Where-Object { $_.Name -eq $Scenario.Interface })
                 if ($ctx.Vmk.Count -ne 1) { throw 'Expected exactly one configured vMotion VMkernel interface.' }
@@ -101,6 +153,14 @@ function Get-LabSettings($Context) {
             $svc = @(Get-VMHostService -VMHost $Context.Host | Where-Object Key -eq 'ntpd')
             if ($svc.Count -ne 1) { throw 'NTP service not found uniquely.' }
             return @{ Running=[bool]$svc[0].Running; Policy=[string]$svc[0].Policy }
+        }
+        'HostPassword' {
+            $h = Get-AdvancedSetting -Entity $Context.Host -Name 'Security.PasswordHistory'
+            return @{ History=[int]$h.Value; RootPassword=(Get-LabRootPassword $Context) }
+        }
+        'Maintenance' {
+            $h = Get-VMHost -Id $Context.Host.Id -Server $Context.VI
+            return @{ State=[string]$h.ConnectionState }
         }
         'Dns' {
             $n = Get-VMHostNetwork -VMHost $Context.Host
@@ -157,10 +217,39 @@ function Set-LabSettings($Context, $Original, [bool]$Break, $State) {
             if ($Break) {
                 $svc | Stop-VMHostService -Confirm:$false | Out-Null
                 $svc | Set-VMHostService -Policy Off -Confirm:$false | Out-Null
+                if ($s.ContainsKey('ClockSkewMinutes') -and $s.ClockSkewMinutes) {
+                    # Move the host clock so the drift is visible straight away (vSAN health:
+                    # "Time is synchronized across hosts and VC"). ntpd steps it back on start.
+                    $dts = Get-View $Context.Host.ExtensionData.ConfigManager.DateTimeSystem -Server $Context.VI
+                    $dts.UpdateDateTime([datetime]::UtcNow.AddMinutes([int]$s.ClockSkewMinutes))
+                }
             } else {
                 $svc | Set-VMHostService -Policy $Original.Policy -Confirm:$false | Out-Null
                 if ($Original.Running) { $svc | Start-VMHostService -Confirm:$false | Out-Null }
                 else { $svc | Stop-VMHostService -Confirm:$false | Out-Null }
+            }
+        }
+        'HostPassword' {
+            # Root password changed on the host only, as if someone reset it outside SDDC Manager.
+            # SDDC Manager keeps the old password, so its health check can no longer log in.
+            $esxcli = Get-EsxCli -VMHost $Context.Host -V2 -Server $Context.VI
+            $lab = $Context.Credential.GetNetworkCredential().Password
+            $new = if ($Break) { [string]$s.DriftPassword } else { $lab }
+            $hist = Get-AdvancedSetting -Entity $Context.Host -Name 'Security.PasswordHistory'
+            if (-not $Break) { $hist | Set-AdvancedSetting -Value 0 -Confirm:$false | Out-Null }  # history blocks the old password
+            try {
+                $ok = $esxcli.system.account.set.Invoke(@{ id='root'; password=$new; passwordconfirmation=$new })
+                if (-not $ok) { throw 'esxcli system account set did not report success.' }
+            }
+            finally { if (-not $Break) { Get-AdvancedSetting -Entity $Context.Host -Name 'Security.PasswordHistory' | Set-AdvancedSetting -Value ([int]$Original.History) -Confirm:$false | Out-Null } }
+            $Context.ExpectDrift = [bool]$Break
+            if (-not $Break) { Sync-LabSddcCredential $s $Context.Credential }
+        }
+        'Maintenance' {
+            if ($Break) {
+                Set-VMHost -VMHost $Context.Host -State Maintenance -VsanDataMigrationMode EnsureAccessibility -Evacuate:$true -Confirm:$false | Out-Null
+            } else {
+                Set-VMHost -VMHost (Get-VMHost -Id $Context.Host.Id -Server $Context.VI) -State Connected -Confirm:$false | Out-Null
             }
         }
         'Dns' {
@@ -229,6 +318,11 @@ function Test-LabDesired($Context, $Original, [bool]$Broken, $State) {
     switch ($Context.Scenario.Kind) {
         'Ntp' { if ($Broken) { return (-not $now.Running -and $now.Policy -eq 'off') }; return ($now.Running -eq $Original.Running -and $now.Policy -eq $Original.Policy) }
         'Dns' { if ($Broken) { return (@($now.Addresses).Count -eq 1 -and $now.Addresses[0] -eq '203.0.113.53' -and -not $now.FromDhcp) }; return ($now.FromDhcp -eq $Original.FromDhcp -and (@($now.Addresses) -join ',') -eq (@($Original.Addresses) -join ',')) }
+        'HostPassword' {
+            if ($Broken) { return ($now.RootPassword -eq 'Drift') }
+            return ($now.RootPassword -eq 'Lab' -and $now.History -eq [int]$Original.History)
+        }
+        'Maintenance' { if ($Broken) { return ($now.State -eq 'Maintenance') }; return ($now.State -eq 'Connected') }
         'Vmotion' { return ($now.Enabled -eq $(if ($Broken) { $false } else { [bool]$Original.Enabled })) }
         'Drs' { return ($now.Automation -eq $(if ($Broken) { 'Manual' } else { $Original.Automation })) }
         'NicDisconnected' { if ($Broken) { return (-not $now.Connected -and -not $now.StartConnected) }; return ($now.Connected -eq $Original.Connected -and $now.StartConnected -eq $Original.StartConnected) }
@@ -277,6 +371,11 @@ function Invoke-LabFault {
                 'Dns' { if ('203.0.113.53' -in @($current.Addresses)) { throw 'Fault DNS address already present.' }; if (-not $current.FromDhcp -and -not @($current.Addresses).Count) { throw 'No static DNS baseline to restore.' } }
                 'Vmotion' { if (-not $current.Enabled) { throw 'vMotion is already disabled.' } }
                 'Drs' { if (-not $current.Enabled -or $current.Automation -eq 'Manual') { throw 'DRS is already disabled or manual.' } }
+                'HostPassword' {
+                    if (-not $scenario.DriftPassword) { throw 'DriftPassword is missing in LabConfig.json.' }
+                    if ($current.RootPassword -ne 'Lab') { throw 'The host root login with the lab password fails (wrong password or root locked out for 15 minutes); restore a healthy baseline first.' }
+                }
+                'Maintenance' { if ($current.State -ne 'Connected') { throw 'The host must be connected and out of maintenance mode.' } }
                 'NicDisconnected' { if ($ctx.VM.PowerState -ne 'PoweredOn' -or -not $current.Connected) { throw 'Disposable VM must be powered on with its NIC connected.' } }
                 'NicWrongPg' { if ($current.Network -eq $scenario.WrongNetwork) { throw 'VM is already on the fault network.' }; Get-VDPortgroup -Name $scenario.WrongNetwork -Server $ctx.VI | Out-Null }
                 'CpuLimit' { if ($current.ReservationMhz -gt 100 -or $current.LimitMhz -eq 100) { throw 'CPU reservation/limit is incompatible with this exercise.' } }

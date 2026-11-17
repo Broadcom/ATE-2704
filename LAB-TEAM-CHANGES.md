@@ -3,6 +3,46 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-17: Lab feedback - VCF Operations thumbprint and bookmark
+
+**Thumbprint (Lab 2, converge).** `lab-files/VCF-9.1.1-converge-from-vSphere-9.1.1.json` joins the existing VCF Operations (`ops-a`, `useExistingDeployment: true`) by its SHA-256 certificate thumbprint. Students deploy `ops-a` in Lab 1, and each deployment gets a new self-signed certificate. The thumbprint in the file came from the .32 test deployment, so the VCF Installer rejects it in every other lab. The vCenter thumbprint in the same file is fine: `vc-mgmt-a` has a lab-CA certificate that is the same in every copy.
+
+New `lab-files/set-ops-thumbprint.sh` reads the running `ops-a` certificate and writes its thumbprint into the spec. Students run it before they upload the spec (Lab 2 Part 1). Tested on .32 with a wrong thumbprint; a second run reports it is already correct.
+
+**Bookmark.** `console/bookmarks.json`, Region A > VVF 9.1.1: VCF Operations pointed to `ops-01a`. Lab 1 deploys `ops-a` (10.1.1.30), so it now points there. `ops-01a` (10.1.1.31) is only used by the older VVF deployment spec.
+
+## 2026-11-17: SDDC Manager file permissions (VCFfinal 1.10, Task 0b)
+
+**Problem.** On a healthy lab the Region B SDDC Manager precheck fails `SDDC_MANAGER_FILE_PERMISSIONS_CHECK` (`/var/log/vmware/vcf/lcm/sddcmanager-fs-check.log`):
+- `application.properties`, `application-prod.properties` and `BomSpecification.yml` in `/opt/vmware/vcf/lcm/lcm-app/conf` are owner read-only;
+- `/opt/vmware/vcf/commonsvcs/bin/commonsvcs` has no owner write bit;
+- `/home/vcf/.ssh/known_hosts_backup` is owned by root.
+
+SDDC Manager rewrites at least `application.properties` and `known_hosts_backup` at boot (its `set-known_hosts.sh` creates the backup as root), so fixing the template does not stay.
+
+**Fix.** New `Startup/ate2704sddcperms.py`, run by `Startup/VCFfinal.py` 1.10 as Task 0b. It logs in to sddcmanager-b as vcf, uses `su` (root SSH is not allowed), adds the owner write bit where it is missing and gives `known_hosts_backup` to vcf. Files that are already correct are left alone, and group/other access is not changed. It never fails the lab. Setting: `[VCFFINAL] sddc_perms` (default true).
+
+**Tested** on .32: dry run, fix (two files reverted to their template state first) and a recheck; the precheck then passed `SDDC_MANAGER_FILE_PERMISSIONS_CHECK`.
+
+**Not fixed, known result.** `INITIALIZE_VCENTER_CHECK` and `NTP_TIME_SYNC_CHECK` (common services) still fail. SDDC Manager looks up the vc-mgmt-b SSO (PSC) record, `31c51500…`, as a vCenter ("Cannot find vCenter entity"). The database links between the vCenter (`6d26e7dc…`) and that record are correct. Region B has been upgraded to 9.1.1 on an earlier copy without these blocking it, so they stay as known precheck results.
+
+## 2026-11-17: Break-Fix pack moved to Region B mgmt-b
+
+`lab-files/Break-Fix Scripts`: the random fault pool is now the faults that the SDDC Manager precheck, the SoS health check or the vSphere Client can show on mgmt-b. All five were run Break and Fix on .32.
+
+| Id | Fault | Target | Shown by |
+|---|---|---|---|
+| 01 | NTP stopped, startup policy manual, clock 10 minutes ahead | esx-04b | vSAN health "Time is synchronized across hosts and VC", SoS vSAN YELLOW |
+| 04 | DRS manual | cluster-mgmt-01b | precheck DRS and maintenance-mode dry-run checks |
+| 11 | NSX admin password expired | nsx-mgmt-01b | precheck `NSX_T_AUDIT_CHECK`, NSX login |
+| 13 (new) | ESXi root password changed outside SDDC Manager | esx-03b | SoS Password Expiry Status RED |
+| 14 (new) | Host left in maintenance mode | esx-02b | vSphere Client |
+
+- `LabConfig.json`: 01 and 04 retargeted to ManagementB; new `ClockSkewMinutes`, `DriftPassword` and `SddcManager` settings; new `Random` flag (only 01, 04, 11, 13 and 14 are picked by `Start-RandomLabFaults.ps1`; the others still run with `-Only`).
+- `LabFaults.psm1`: new kinds `HostPassword` (root login checked over HTTPS with the host certificate pinned to vCenter's copy; the Fix clears the password history for the reset and updates SDDC Manager's stored password) and `Maintenance`.
+- `LabOrchestrator.psm1`: 04 and 14 are never picked together (leaving maintenance mode needs DRS).
+- Lockout: ESXi and NSX lock the account for 15 minutes after 5 failed logins. The password check tries the expected password first so the scripts don't trigger it.
+
 ## 2026-11-16: VKS adapter heal (VCFfinal 1.9, Task 1d)
 
 **Problem.** On fresh copies of the 2026-11-16 template (.26 and .45; not on .24 itself) the `vks-01` control plane VM on `esx-06b` powered on with its network adapter disconnected: `Failed to connect port to opaque network: Not found`. NSX Manager had the port (DOWN, unbound) and the segment, and the host's NSX control and management connections were UP, but `esx-06b`'s local NSX database (NestDB) had no entry for that VIF; on .24 it had one. ESX does not retry, so the VKS cluster API and the voting app stayed down and the startup reported Ready after the 30-minute Kubernetes wait. Restarting `nsx-opsagent` / `nsx-proxy` on the host did not help. The Supervisor blocks reconnecting or moving its VMs through vCenter (`VirtualMachine.Interact.DeviceConnection`, relocate denied).

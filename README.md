@@ -182,6 +182,7 @@ ATE-2704/
 ├── Startup/
 │   ├── ate2704stage.py        Upgrade-stage detection and the settings for each stage
 │   ├── ate2704labfiles.py     Copies lab-files/ and lab-build/ to the console
+│   ├── ate2704sddcperms.py    Fixes SDDC Manager file permissions (precheck)
 │   ├── VCF.py                 Wrapper around the core VCF.py (stage + lab files)
 │   └── VCFfinal.py            Lab-specific replacement for the core VCFfinal.py
 ├── Shutdown/

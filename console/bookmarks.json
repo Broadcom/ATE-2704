@@ -152,9 +152,9 @@
          "uri": "https://vc-mgmt-a.site-a.vcf.lab:5480/"
         },
         {
-         "title": "VCF Operations (ops-01a)",
+         "title": "VCF Operations (ops-a)",
          "type": "text/x-moz-place",
-         "uri": "https://ops-01a.site-a.vcf.lab/ui/"
+         "uri": "https://ops-a.site-a.vcf.lab/ui/"
         },
         {
          "title": "VCF Installer",

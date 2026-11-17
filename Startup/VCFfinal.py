@@ -1,5 +1,9 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.9 - 2026-11-16
+# Version 1.10 - 2026-11-17
+#   1.10: Task 0b fixes the SDDC Manager file permissions that make the Region B
+#        precheck fail SDDC_MANAGER_FILE_PERMISSIONS_CHECK on a healthy lab
+#        (Startup/ate2704sddcperms.py). SDDC Manager rewrites some of these
+#        files at boot, so a template fix does not stay.
 #   1.9: Task 1d heals VKS / Supervisor VMs whose NSX network adapter failed at
 #        power-on. On fresh copies of the 2026-11-16 template (.26, .45) the
 #        vks-01 control plane VM on esx-06b started with its adapter
@@ -72,6 +76,11 @@
 #           the Supervisor vCenter over SSH to stop WCP and pause clusters; the
 #           core vSphere.py tries to enable SSH but sends the body "true", which
 #           vCenter 8.0 U3 rejects (HTTP 400). Never fails the lab.
+#   Task 0b SDDC Manager file permissions (Startup/ate2704sddcperms.py): add
+#           the owner write bit to the LCM config files and give
+#           known_hosts_backup back to vcf, so the precheck's
+#           SDDC_MANAGER_FILE_PERMISSIONS_CHECK passes. [VCFFINAL]
+#           sddc_perms = false turns it off. Never fails the lab.
 #   Task 1  Supervisor (tanzucontrol): make sure WCP is running on the
 #           Supervisor vCenter and wait until the Supervisor reports
 #           RUNNING / READY. The control plane VMs are started by vCenter
@@ -324,6 +333,22 @@ def _ensure_wcp(lsf, vc, user):
             state = rq.get(f'{base}/vcenter/services/wcp', headers=h, verify=False, timeout=30).json().get('state')
         return state
     return _vc_api(lsf, vc, user, calls)
+
+
+def task_sddc_perms(lsf, db, ts, dry_run):
+    """Task 0b: owner-write / owner fixes on SDDC Manager files the precheck checks. Never fails the lab."""
+    if not _bool(lsf, 'sddc_perms', True):
+        lsf.write_output('sddc_perms = false - not checking SDDC Manager file permissions')
+        return True
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ate2704sddcperms', os.path.join(HERE, 'ate2704sddcperms.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.run(lsf, dry_run=dry_run)
+    except Exception as e:
+        lsf.write_output(f'ATE-2704 SDDC Manager permissions: skipped ({e})')
+    return True
 
 
 def task_vcenter_ssh(lsf, db, ts, dry_run):
@@ -1160,6 +1185,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
         _set(db, ts, t, 'SKIPPED', 'Not used in ATE-2704')
     try:
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
+              and task_sddc_perms(lsf, db, ts, dry_run)
               and task_stage_report(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
               and task_vks_unpause(lsf, db, ts, dry_run)

@@ -12,7 +12,8 @@ $script:HighImpact = @('10-WorkloadBgpDisabled', '12-VcenterCertificateTrust')
 # Pairs that must not be active together.
 $script:Conflicts = @(
     @('09-EdgeUplinkVlanMissing', '10-WorkloadBgpDisabled'),      # 10 drops every BGP session and hides 09
-    @('11-NsxAdminPasswordExpired', '12-VcenterCertificateTrust') # security module allows one security fault at a time
+    @('11-NsxAdminPasswordExpired', '12-VcenterCertificateTrust'), # security module allows one security fault at a time
+    @('04-DrsManual', '14-HostMaintenanceMode')                     # maintenance mode needs DRS to move the VMs off the host
 )
 
 # Repair order. 12 first: until vc-mgmt-a has its original certificate back, the
@@ -38,6 +39,8 @@ function Get-OrchScenarios {
             Id = $s.Id; Kind = $s.Kind; Scope = $s.Scope; Target = $s.Target; Title = $s.Title
             Security = ($s.ContainsKey('Backend') -and $s.Backend -eq 'Security')
             HighImpact = ($s.Id -in $script:HighImpact)
+            # Only scenarios marked "Random": true in LabConfig.json are picked by Start-RandomLabFaults.
+            Random = (-not $s.ContainsKey('Random')) -or [bool]$s.Random
         }
     }
 }
