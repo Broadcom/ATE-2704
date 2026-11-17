@@ -138,6 +138,27 @@ class Appliance:
         finally:
             self.fm.DeleteFileInGuest(self.vm, self.auth, path)
 
+    def put_secret(self, data):
+        # Passwords never go into Guest Operations process arguments. They travel as a
+        # root-only file over the verified transfer channel; the guest script deletes it.
+        path = '/var/tmp/lab-secret-' + uuid.uuid4().hex + '.json'
+        body = json.dumps(data).encode()
+        attrs = vim.vm.guest.FileManager.PosixFileAttributes(permissions=0o600)
+        url = self.fm.InitiateFileTransferToGuest(self.vm, self.auth, path, attrs, len(body), True)
+        u = urlsplit(url)
+        host = self.vm.runtime.host.name
+        host_ip = next(v.spec.ip.ipAddress for v in self.vm.runtime.host.config.network.vnic if v.device == 'vmk0')
+        if u.scheme != 'https' or u.hostname not in ('*', host, host_ip):
+            raise RuntimeError('Unexpected Guest Operations transfer endpoint')
+        url = urlunsplit((u.scheme, host + ':' + str(u.port or 443), u.path, u.query, ''))
+        try:
+            result = self.session.put(url, data=body, verify=str(self.transfer_trust), timeout=30)
+        except requests.RequestException:
+            raise RuntimeError('Guest secret transfer failed; transfer URL withheld') from None
+        if result.status_code != 200:
+            raise RuntimeError('Guest secret transfer failed')
+        return path
+
     def close(self):
         if getattr(self, 'si', None):
             Disconnect(self.si)
@@ -145,7 +166,7 @@ class Appliance:
             self.session.close()
 
 
-def nsx_user(appliance, reset=None, original=None):
+def nsx_user(appliance, reset=None, original=None, secret_path=None):
     # Same loopback node API and root identity header used by the installed NSX CLI.
     # The transport is confined to the Manager guest, accessed through authenticated
     # vCenter Guest Operations. No SSH/root network login or PAM file edits.
@@ -169,8 +190,24 @@ change=CHANGE
 if change is not None:
  call('PUT','/node/users/'+str(u['userid']),change)
  u=call('GET','/node/users/'+str(u['userid']))
+secret_path=SECRET_PATH
+if secret_path:
+ import os,time
+ try:
+  sec=json.load(open(secret_path))
+ finally:
+  os.remove(secret_path)
+ # NSX 4.2.1 keeps PASSWORD_EXPIRED after password_reset_required=false; only a
+ # password change clears it, and NSX refuses the current password as the new one.
+ if u.get('status')!='ACTIVE' or u.get('password_reset_required'):
+  for new,old in ((sec['temp'],sec['lab']),(sec['lab'],sec['temp'])):
+   call('PUT','/node/users/'+str(u['userid']),{'password':new,'old_password':old})
+   time.sleep(2)
+  if u.get('password_reset_required'):
+   call('PUT','/node/users/'+str(u['userid']),{'password_reset_required':False})
+  u=call('GET','/node/users/'+str(u['userid']))
 print(json.dumps({k:u.get(k) for k in ('userid','username','status','password_reset_required','password_change_frequency','password_change_warning')}))
-'''.replace('CHANGE', repr(change)).replace('EXPECTED_USERID', repr(expected_userid))
+'''.replace('CHANGE', repr(change)).replace('EXPECTED_USERID', repr(expected_userid)).replace('SECRET_PATH', repr(secret_path))
     return appliance.execute(script)
 
 
@@ -337,6 +374,11 @@ def main(cfg):
                         result=original
                     else:
                         result=nsx_user(appliance,desired,state['Original'])
+                        if not desired and (result['status']!='ACTIVE' or result['password_reset_required']):
+                            # The admin password in this lab is the lab password (same as root).
+                            temp='Lab!'+uuid.uuid4().hex[:12]+'Aa9#'
+                            secret=appliance.put_secret({'lab':cfg['guest_password'],'temp':temp})
+                            result=nsx_user(appliance,None,state['Original'],secret_path=secret)
                     if result['password_reset_required']!=desired or result['status']!=('PASSWORD_EXPIRED' if desired else 'ACTIVE'):
                         raise RuntimeError('Native NSX password state did not verify')
                 elif cfg['action']=='Break':

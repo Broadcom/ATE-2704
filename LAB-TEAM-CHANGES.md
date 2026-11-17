@@ -3,6 +3,12 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-17: Break-Fix fault 11 (NSX admin password expired) repair
+
+`Fix-11` and `Repair-AllLabFaults.ps1` failed with "Native NSX password state did not verify". The fix cleared `password_reset_required` through the NSX node API, but NSX 4.2.1 keeps admin at PASSWORD_EXPIRED until the password changes. The earlier test only passed because the password had already been changed by hand.
+
+`Helpers/security_faults.py` now changes the admin password to a random temporary one and back to the lab password, through the same root-only loopback API inside the NSX appliance. The passwords go to the appliance as a root-only file over the vCenter Guest Operations file transfer, never in process arguments, and the script deletes the file before it uses them. Tested on .32: break then fix, admin back to ACTIVE with the lab password.
+
 ## 2026-11-17: Lab feedback - VCF Operations thumbprint and bookmark
 
 **Thumbprint (Lab 2, converge).** `lab-files/VCF-9.1.1-converge-from-vSphere-9.1.1.json` joins the existing VCF Operations (`ops-a`, `useExistingDeployment: true`) by its SHA-256 certificate thumbprint. Students deploy `ops-a` in Lab 1, and each deployment gets a new self-signed certificate. The thumbprint in the file came from the .32 test deployment, so the VCF Installer rejects it in every other lab. The vCenter thumbprint in the same file is fine: `vc-mgmt-a` has a lab-CA certificate that is the same in every copy.
