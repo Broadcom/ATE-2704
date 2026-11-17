@@ -3,6 +3,14 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-17: lab CA signing helper for VCF certificates (sign-csr.py)
+
+**Problem.** In VCF 9.1, the components that the VCF Installer converge (Region A) or the management services install (Region B) deploys get certificates from the management vCenter's VMCA: SDDC Manager, NSX, the VCF services runtime and fleet. The converge also re-issues the VCF Installer's own certificate about 90 minutes in. The console Firefox trusts only vcf.lab Root Authority. These sites also send HSTS, so after a VMCA certificate replaces a trusted one, Firefox blocks the page with no "Accept the risk" option. VCF Operations, its cloud proxy and the license server use their own self-signed CAs. vCenter, ESX and the in-place-upgraded Region B SDDC Manager keep their vcf.lab certificates.
+
+The HOL CA proxy (`https://ca.vcf.lab/certsrv`) would let Fleet Management request certificates itself, but it authenticates with the holorouter's `/root/creds.txt` value. That is not the lab password, and students cannot see it.
+
+**Change.** New `lab-files/sign-csr.py`, copied to `~/Lab Files` at boot. Students generate CSRs in VCF Operations (Fleet Management > Certificates), download them and run the script. It submits each CSR to the holorouter Vault PKI (`pki/sign/holodeck`, using the token in `~/creds.txt` the way `hol-ssl.py` does, never printed) and writes `<name>.crt` and `<name>-chain.pem`, which students import back in Fleet Management. It keeps the CSR's CN and SANs (including IP SANs), uses a 397-day TTL (the Firefox maximum), and accepts single files or a zip or tar of CSRs. Tested on .32 with a test CSR; the certificate verifies against vcf.lab Root Authority.
+
 ## 2026-11-17: Break-Fix fault 11 (NSX admin password expired) repair
 
 `Fix-11` and `Repair-AllLabFaults.ps1` failed with "Native NSX password state did not verify". The fix cleared `password_reset_required` through the NSX node API, but NSX 4.2.1 keeps admin at PASSWORD_EXPIRED until the password changes. The earlier test only passed because the password had already been changed by hand.
