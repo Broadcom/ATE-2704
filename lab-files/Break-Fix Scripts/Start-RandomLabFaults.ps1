@@ -45,7 +45,8 @@ if ($active.Count) {
 $all = @(Get-OrchScenarios)
 foreach ($id in @($Exclude) + @($Only)) { if ($id -notin $all.Id) { throw "Unknown exercise ID: $id" } }
 $pool = @($all | Where-Object {
-        ($Only.Count -eq 0 -or $_.Id -in $Only) -and $_.Id -notin $Exclude -and ($IncludeHighImpact -or -not $_.HighImpact)
+        ($Only.Count -eq 0 -or $_.Id -in $Only) -and $_.Id -notin $Exclude -and ($IncludeHighImpact -or -not $_.HighImpact) -and
+        ($_.Random -or $_.Id -in $Only)
     })
 if ($Count -eq 0) { $Count = Get-Random -Minimum 2 -Maximum 4 }
 $selection = @(Select-OrchCompatibleSet $pool $Count)

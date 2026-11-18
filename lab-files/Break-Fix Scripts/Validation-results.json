@@ -4,7 +4,7 @@
   "checks": [
     {
       "Id": "01-NtpStopped",
-      "Target": "esx-04a.site-a.vcf.lab",
+      "Target": "esx-04b.site-b.vcf.lab",
       "Kind": "Ntp",
       "Current": "{\"Policy\":\"on\",\"Running\":true}"
     },
@@ -22,7 +22,7 @@
     },
     {
       "Id": "04-DrsManual",
-      "Target": "cluster-mgmt-01a",
+      "Target": "cluster-mgmt-01b",
       "Kind": "Drs",
       "Current": "{\"Enabled\":true,\"Automation\":\"FullyAutomated\"}"
     },
@@ -93,6 +93,18 @@
       "Scenarios": 12,
       "ReadOnly": true,
       "FaultsExecuted": false
+    },
+    {
+      "Id": "13-HostPasswordDrift",
+      "Target": "esx-03b.site-b.vcf.lab",
+      "Kind": "HostPassword",
+      "Current": "{\"History\":5,\"RootPassword\":\"Lab\"}"
+    },
+    {
+      "Id": "14-HostMaintenanceMode",
+      "Target": "esx-02b.site-b.vcf.lab",
+      "Kind": "Maintenance",
+      "Current": "{\"State\":\"Connected\"}"
     }
   ],
   "liveFaultCyclesExecuted": false,

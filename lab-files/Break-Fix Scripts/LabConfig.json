@@ -31,10 +31,12 @@
     {
       "Id": "01-NtpStopped",
       "Kind": "Ntp",
-      "Scope": "RegionA",
-      "Target": "esx-04a.site-a.vcf.lab",
-      "Title": "ESXi NTP service stopped",
-      "Impact": "One host loses time synchronization; drift develops over time, not immediately."
+      "Scope": "ManagementB",
+      "Target": "esx-04b.site-b.vcf.lab",
+      "Title": "ESXi NTP service stopped and host clock drifted",
+      "Impact": "esx-04b keeps no time and its clock runs 10 minutes ahead; vSAN health raises \"Time is synchronized across hosts and VC\".",
+      "ClockSkewMinutes": 10,
+      "Random": true
     },
     {
       "Id": "02-WrongHostDns",
@@ -42,7 +44,8 @@
       "Scope": "RegionA",
       "Target": "esx-04a.site-a.vcf.lab",
       "Title": "ESXi DNS points to an invalid resolver",
-      "Impact": "Hostname resolution and DNS-related readiness checks fail on one host."
+      "Impact": "Hostname resolution and DNS-related readiness checks fail on one host.",
+      "Random": false
     },
     {
       "Id": "03-VmotionDisabled",
@@ -51,15 +54,17 @@
       "Target": "esx-04a.site-a.vcf.lab",
       "Interface": "vmk2",
       "Title": "vMotion disabled on its VMkernel interface",
-      "Impact": "Migrations involving this host and upgrade evacuation can fail."
+      "Impact": "Migrations involving this host and upgrade evacuation can fail.",
+      "Random": false
     },
     {
       "Id": "04-DrsManual",
       "Kind": "Drs",
-      "Scope": "RegionA",
-      "Target": "cluster-mgmt-01a",
+      "Scope": "ManagementB",
+      "Target": "cluster-mgmt-01b",
       "Title": "DRS changed to manual",
-      "Impact": "Automatic placement and evacuation require intervention."
+      "Impact": "Automatic placement stops and hosts cannot be evacuated for upgrades; the SDDC Manager precheck fails its DRS and maintenance-mode dry-run checks.",
+      "Random": true
     },
     {
       "Id": "05-VmNicDisconnected",
@@ -68,7 +73,8 @@
       "Target": "user-vm-a",
       "VmUuid": "5021d478-e005-0b4f-4b55-02640956d081",
       "Title": "Disposable VM NIC disconnected",
-      "Impact": "user-vm-a loses connectivity immediately and after power cycling."
+      "Impact": "user-vm-a loses connectivity immediately and after power cycling.",
+      "Random": false
     },
     {
       "Id": "06-WrongVmNetwork",
@@ -78,7 +84,8 @@
       "VmUuid": "5021a857-9127-2158-78fe-199f9485722c",
       "WrongNetwork": "vmmgmt-vds01-mgmt-01a",
       "Title": "Disposable VM attached to the wrong portgroup",
-      "Impact": "The NIC stays connected but the static guest address is on the wrong VLAN."
+      "Impact": "The NIC stays connected but the static guest address is on the wrong VLAN.",
+      "Random": false
     },
     {
       "Id": "07-VmCpuLimit",
@@ -87,7 +94,8 @@
       "Target": "user-vm-a",
       "VmUuid": "5021d478-e005-0b4f-4b55-02640956d081",
       "Title": "Restrictive 100 MHz VM CPU limit",
-      "Impact": "Guest becomes sluggish despite apparent host CPU headroom."
+      "Impact": "Guest becomes sluggish despite apparent host CPU headroom.",
+      "Random": false
     },
     {
       "Id": "08-LeftoverSnapshot",
@@ -96,7 +104,8 @@
       "Target": "user-vm-b",
       "VmUuid": "5021a857-9127-2158-78fe-199f9485722c",
       "Title": "Snapshot left for pre-upgrade hygiene review",
-      "Impact": "A new disk-only snapshot appears. This is a hygiene exercise, not a universal hardware-upgrade blocker."
+      "Impact": "A new disk-only snapshot appears. This is a hygiene exercise, not a universal hardware-upgrade blocker.",
+      "Random": false
     },
     {
       "Id": "09-EdgeUplinkVlanMissing",
@@ -106,7 +115,8 @@
       "Switch": "vds01-wld01-01b",
       "SwitchUuid": "50 35 50 97 da fd 65 ba-ff 7a dc 5b 21 67 78 bf",
       "Title": "BGP uplink VLAN missing from Edge trunk",
-      "Impact": "VLAN 49 is removed from uplink 1; TEP VLAN 48 and uplink 2 remain. Expect two external BGP sessions down."
+      "Impact": "VLAN 49 is removed from uplink 1; TEP VLAN 48 and uplink 2 remain. Expect two external BGP sessions down.",
+      "Random": false
     },
     {
       "Id": "10-WorkloadBgpDisabled",
@@ -114,7 +124,8 @@
       "Scope": "NSX",
       "Target": "t0-wld01-b",
       "Title": "Workload Tier-0 BGP disabled",
-      "Impact": "HIGH IMPACT: all four external BGP sessions drop. Workload north-south and Supervisor load-balancer access fail. Recover through the management NSX endpoint."
+      "Impact": "HIGH IMPACT: all four external BGP sessions drop. Workload north-south and Supervisor load-balancer access fail. Recover through the management NSX endpoint.",
+      "Random": false
     },
     {
       "Id": "11-NsxAdminPasswordExpired",
@@ -123,7 +134,8 @@
       "Scope": "ManagementB",
       "Target": "nsx-mgmt-01b",
       "Title": "VCF 5.2.1 management NSX admin password forced to expire",
-      "Impact": "VCF 5.2.1 NSX admin UI/API access and SDDC Manager operations using that credential can fail. Recovery uses root through vc-mgmt-b Guest Operations."
+      "Impact": "VCF 5.2.1 NSX admin UI/API access and SDDC Manager operations using that credential can fail. Recovery uses root through vc-mgmt-b Guest Operations.",
+      "Random": true
     },
     {
       "Id": "12-VcenterCertificateTrust",
@@ -132,7 +144,28 @@
       "Scope": "RegionA",
       "Target": "vc-mgmt-a",
       "Title": "vCenter Machine SSL certificate signed by an untrusted lab CA",
-      "Impact": "HIGH IMPACT: normal clients reject the vCenter certificate. Existing HTTPS integrations can lose connectivity. Recovery restores the original certificate/key."
+      "Impact": "HIGH IMPACT: normal clients reject the vCenter certificate. Existing HTTPS integrations can lose connectivity. Recovery restores the original certificate/key.",
+      "Random": false
+    },
+    {
+      "Id": "13-HostPasswordDrift",
+      "Kind": "HostPassword",
+      "Scope": "ManagementB",
+      "Target": "esx-03b.site-b.vcf.lab",
+      "SddcManager": "sddcmanager-b.site-b.vcf.lab",
+      "DriftPassword": "VMware123!Drift2026",
+      "Title": "ESXi root password changed outside SDDC Manager",
+      "Impact": "SDDC Manager can no longer log in to esx-03b; the SoS health check reports the password check as failed and upgrades would fail.",
+      "Random": true
+    },
+    {
+      "Id": "14-HostMaintenanceMode",
+      "Kind": "Maintenance",
+      "Scope": "ManagementB",
+      "Target": "esx-02b.site-b.vcf.lab",
+      "Title": "ESXi host left in maintenance mode",
+      "Impact": "esx-02b runs no VMs and contributes no vSAN capacity; vSAN object health turns red until the host is back.",
+      "Random": true
     }
   ],
   "SecurityTargets": {

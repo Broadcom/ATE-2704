@@ -32,7 +32,10 @@ OPTIONS (Start-RandomLabFaults.ps1)
 
 COMBINATION RULES
   - Refuses to start while any earlier fault is active: run Repair-AllLabFaults first.
+  - Only exercises marked "Random": true in LabConfig.json are picked: 01, 04, 11,
+    13 and 14 (Region B mgmt-b). The others run only when named with -Only.
   - 10 and 12 are excluded unless -IncludeHighImpact.
+  - Never 04 with 14 (leaving maintenance mode needs DRS to move VMs back).
   - Never 09 with 10 (10 drops every BGP session and hides 09).
   - At most one security exercise (11 or 12); it is always broken first because
     the security module refuses to start while another fault is active.
