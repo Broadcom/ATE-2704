@@ -1,5 +1,9 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.11 - 2026-11-18
+# Version 1.12 - 2026-11-18
+#   1.12: Task 0d sets the wld01-b Edge uplink profile (uplinkprofile-edge-wld01-b
+#        on nsx-wld01-b) to MTU 8900 if it is not already (Startup/ate2704edgemtu.py).
+#        It was 1700 while the hosts' overlay runs at 8900 on vds01-wld01-01b, so
+#        NSX raised a HIGH "MTU mismatch within transport zone" alarm on every copy.
 #   1.11: Task 0c makes the console Firefox trust the vCenter VMCA roots
 #        (Startup/ate2704ffcerts.py). The template profile only had an old
 #        vc-mgmt-a root, so the VCF Installer was HSTS-blocked part-way through
@@ -92,6 +96,12 @@
 #           blocked. Checks by fingerprint first; adds only what is missing.
 #           [VCFFINAL] firefox_vmca = false turns it off, firefox_vmca_vcenters
 #           changes the list. Never fails the lab.
+#   Task 0d Edge uplink MTU (Startup/ate2704edgemtu.py): set the wld01-b Edge
+#           uplink profile to MTU 8900, matching the hosts' distributed switch
+#           (as VCF set up the Region B management domain's Edges). Reads first;
+#           changes only a profile that is not at 8900 and reads it back.
+#           [VCFFINAL] edge_mtu = false turns it off, edge_mtu_profiles
+#           ("nsx_fqdn:profile_name:mtu") changes the list. Never fails the lab.
 #   Task 1  Supervisor (tanzucontrol): make sure WCP is running on the
 #           Supervisor vCenter and wait until the Supervisor reports
 #           RUNNING / READY. The control plane VMs are started by vCenter
@@ -128,6 +138,8 @@
 #
 # Optional [VCFFINAL] keys read by this override:
 #   vcenter_ssh          (default true)  Task 0 on/off
+#   edge_mtu             (default true)  Task 0d on/off
+#   edge_mtu_profiles    (wld01-b Edges) nsx_fqdn:profile_name:mtu, one per line
 #   tanzu_wait_minutes   (default 20)    Supervisor readiness wait
 #   tanzu_required       (default false) fail the lab if not ready in time
 #   vra_start_hosts      (none)          appliances to run deploy.sh on
@@ -375,6 +387,23 @@ def task_firefox_vmca(lsf, db, ts, dry_run):
         mod.run(lsf, vcenters=lsf.get_config_list('VCFFINAL', 'firefox_vmca_vcenters') or None, dry_run=dry_run)
     except Exception as e:
         lsf.write_output(f'ATE-2704 Firefox VMCA roots: skipped ({e})')
+    return True
+
+
+def task_edge_mtu(lsf, db, ts, dry_run):
+    """Task 0d: wld01-b Edge uplink profile MTU matches the hosts (Startup/ate2704edgemtu.py). Never fails the lab."""
+    if not _bool(lsf, 'edge_mtu', True):
+        lsf.write_output('edge_mtu = false - not checking the Edge uplink profile MTU')
+        return True
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ate2704edgemtu', os.path.join(HERE, 'ate2704edgemtu.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        targets = mod.parse_targets(lsf.get_config_list('VCFFINAL', 'edge_mtu_profiles')) or None
+        mod.run(lsf, targets=targets, dry_run=dry_run)
+    except Exception as e:
+        lsf.write_output(f'ATE-2704 Edge uplink MTU: skipped ({e})')
     return True
 
 
@@ -1214,6 +1243,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
               and task_sddc_perms(lsf, db, ts, dry_run)
               and task_firefox_vmca(lsf, db, ts, dry_run)
+              and task_edge_mtu(lsf, db, ts, dry_run)
               and task_stage_report(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
               and task_vks_unpause(lsf, db, ts, dry_run)
