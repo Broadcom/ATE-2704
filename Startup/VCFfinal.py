@@ -1,5 +1,9 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.10 - 2026-11-17
+# Version 1.11 - 2026-11-18
+#   1.11: Task 0c makes the console Firefox trust the vCenter VMCA roots
+#        (Startup/ate2704ffcerts.py). The template profile only had an old
+#        vc-mgmt-a root, so the VCF Installer was HSTS-blocked part-way through
+#        the Lab 2 converge on every copy.
 #   1.10: Task 0b fixes the SDDC Manager file permissions that make the Region B
 #        precheck fail SDDC_MANAGER_FILE_PERMISSIONS_CHECK on a healthy lab
 #        (Startup/ate2704sddcperms.py). SDDC Manager rewrites some of these
@@ -81,6 +85,13 @@
 #           known_hosts_backup back to vcf, so the precheck's
 #           SDDC_MANAGER_FILE_PERMISSIONS_CHECK passes. [VCFFINAL]
 #           sddc_perms = false turns it off. Never fails the lab.
+#   Task 0c Firefox VMCA roots (Startup/ate2704ffcerts.py): make the console
+#           Firefox trust the VMCA roots of vc-mgmt-a, vc-mgmt-b and
+#           vc-wld01-b, so the appliances that get VMCA certificates during the
+#           upgrades (VCF Installer, SDDC Manager, NSX, ...) are not HSTS-
+#           blocked. Checks by fingerprint first; adds only what is missing.
+#           [VCFFINAL] firefox_vmca = false turns it off, firefox_vmca_vcenters
+#           changes the list. Never fails the lab.
 #   Task 1  Supervisor (tanzucontrol): make sure WCP is running on the
 #           Supervisor vCenter and wait until the Supervisor reports
 #           RUNNING / READY. The control plane VMs are started by vCenter
@@ -348,6 +359,22 @@ def task_sddc_perms(lsf, db, ts, dry_run):
         mod.run(lsf, dry_run=dry_run)
     except Exception as e:
         lsf.write_output(f'ATE-2704 SDDC Manager permissions: skipped ({e})')
+    return True
+
+
+def task_firefox_vmca(lsf, db, ts, dry_run):
+    """Task 0c: console Firefox trusts the vCenter VMCA roots (Startup/ate2704ffcerts.py). Never fails the lab."""
+    if not _bool(lsf, 'firefox_vmca', True):
+        lsf.write_output('firefox_vmca = false - not checking the Firefox VMCA roots')
+        return True
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ate2704ffcerts', os.path.join(HERE, 'ate2704ffcerts.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.run(lsf, vcenters=lsf.get_config_list('VCFFINAL', 'firefox_vmca_vcenters') or None, dry_run=dry_run)
+    except Exception as e:
+        lsf.write_output(f'ATE-2704 Firefox VMCA roots: skipped ({e})')
     return True
 
 
@@ -1186,6 +1213,7 @@ def main(lsf=None, standalone=False, dry_run=False, force=False):
     try:
         ok = (task_vcenter_ssh(lsf, db, ts, dry_run)
               and task_sddc_perms(lsf, db, ts, dry_run)
+              and task_firefox_vmca(lsf, db, ts, dry_run)
               and task_stage_report(lsf, db, ts, dry_run)
               and task_supervisor(lsf, db, ts, dry_run)
               and task_vks_unpause(lsf, db, ts, dry_run)
