@@ -3,6 +3,12 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-19: Console title and HOL Admin bookmark
+
+- `config.ini` `[VPOD] conky_title` is now "vSphere to VCF Upgrade and Import" (was "vSphere 8 / VCF 5.2.1 Upgrade Lab"). The core writes it into the console's Lab Status panel at every startup. `console/VMware.config` has the same title so the two match.
+- `console/bookmarks.json`: removed the HOL Admin bookmark "vc-wld01-a Appliance Management". This lab has no `vc-wld01-a`.
+- `console/bookmarks.json`: the Region A folder "VVF 9.1.1" is now "vSphere 9.1.1". It holds `vc-mgmt-a`, VCF Operations (`ops-a`) and the VCF Installer, which is Region A after Lab 1 (vSphere 9.1.1). The VVF upgrade chapter is no longer in the manual.
+
 ## 2026-11-19: Region B recovery template (no Region A)
 
 **Why.** A second, smaller template lets students who fall behind carry on with Lab 4 (import and upgrade wld01-b) and Lab 5 (Aria Automation upgrade). It is a copy of a lab at the end of Lab 3, checked against the current Lab 3 guide on .32, with the Region A vCenter (`vc-mgmt-a`) and hosts (`esx-01a` to `esx-04a`) deleted. `user-vm-a` and `user-vm-b` go with the hosts. Labs 4 and 5 only use Region B, and Region B has no dependency on Region A: separate SSO domains, DNS and NTP on 10.2.1.1, and its own VCF Operations, Fleet, identity broker and license server. The shared services with site-a names stay in the template: the offline depot (SDDC Manager depot, VKS content libraries on port 8080, Gitea), the VCF Installer, the router (NSX and vCenter backups) and the console.

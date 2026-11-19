@@ -77,11 +77,6 @@
        "uri": "https://vc-mgmt-a.site-a.vcf.lab:5480/#/login"
       },
       {
-       "title": "vc-wld01-a Appliance Management",
-       "type": "text/x-moz-place",
-       "uri": "https://vc-wld01-a.site-a.vcf.lab:5480/#/login"
-      },
-      {
        "title": "Technitium DNS Server v14.3",
        "type": "text/x-moz-place",
        "uri": "https://dns.vcf.lab/"
@@ -105,7 +100,7 @@
        "title": "VCF CA Proxy  - proxy in front of Hashicorp Vault",
        "type": "text/x-moz-place",
        "uri": "https://ca.vcf.lab/certsrv/certcarc.asp"
-      },
+      },
       {
        "title": "Lab Startup Status",
        "type": "text/x-moz-place",
@@ -138,7 +133,7 @@
        "type": "text/x-moz-place-separator"
       },
       {
-       "title": "VVF 9.1.1",
+       "title": "vSphere 9.1.1",
        "type": "text/x-moz-place-container",
        "children": [
         {
@@ -343,7 +338,7 @@
           },
           {
            "title": "VCF Operations (ops-01b)",
-           "type": "text/x-moz-place",
+           "type": "text/x-moz-place",
            "uri": "https://ops-01b.site-b.vcf.lab/ui/"
           },
           {
