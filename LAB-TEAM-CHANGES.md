@@ -8,6 +8,7 @@ Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 - `config.ini` `[VPOD] conky_title` is now "vSphere to VCF Upgrade and Import" (was "vSphere 8 / VCF 5.2.1 Upgrade Lab"). The core writes it into the console's Lab Status panel at every startup. `console/VMware.config` has the same title so the two match.
 - `console/bookmarks.json`: removed the HOL Admin bookmark "vc-wld01-a Appliance Management". This lab has no `vc-wld01-a`.
 - `console/bookmarks.json`: the Region A folder "VVF 9.1.1" is now "vSphere 9.1.1". It holds `vc-mgmt-a`, VCF Operations (`ops-a`) and the VCF Installer, which is Region A after Lab 1 (vSphere 9.1.1). The VVF upgrade chapter is no longer in the manual.
+- `console/bookmarks.json`: Region B > VCF 9.1.1 > Workload Domain now has Argo CD (`https://argocd.site-b.vcf.lab`), Voting App (`http://vote.site-b.vcf.lab`), Voting App Results (`http://result.site-b.vcf.lab`) and the Gitea `voting-app` repository. Lab 4 Part 4 asks students to check the app, and the guide now gives the same addresses.
 
 ## 2026-11-19: Region B recovery template (no Region A)
 

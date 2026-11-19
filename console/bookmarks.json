@@ -394,6 +394,26 @@
            "uri": "https://nsx-wld01-b.site-b.vcf.lab/"
           },
           {
+           "title": "Argo CD",
+           "type": "text/x-moz-place",
+           "uri": "https://argocd.site-b.vcf.lab/"
+          },
+          {
+           "title": "Voting App",
+           "type": "text/x-moz-place",
+           "uri": "http://vote.site-b.vcf.lab/"
+          },
+          {
+           "title": "Voting App Results",
+           "type": "text/x-moz-place",
+           "uri": "http://result.site-b.vcf.lab/"
+          },
+          {
+           "title": "Gitea voting-app repository",
+           "type": "text/x-moz-place",
+           "uri": "http://offlinedepot.site-a.vcf.lab:3000/holadmin/voting-app"
+          },
+          {
            "title": "Hosts",
            "type": "text/x-moz-place-container",
            "children": [
