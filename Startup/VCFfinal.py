@@ -1,5 +1,9 @@
 # VCFfinal.py - ATE-2704 lab-specific override of the core VCFfinal module
-# Version 1.12 - 2026-11-18
+# Version 1.13 - 2026-11-19
+#   1.13: Region B recovery template (Region A vCenter and hosts removed, marker
+#        /home/holuser/ate2704-no-region-a, see Startup/ate2704stage.py 1.5):
+#        Task 0c only reads the Region B vCenter roots. The stage report shows
+#        "Region A removed".
 #   1.12: Task 0d sets the wld01-b Edge uplink profile (uplinkprofile-edge-wld01-b
 #        on nsx-wld01-b) to MTU 8900 if it is not already (Startup/ate2704edgemtu.py).
 #        It was 1700 while the hosts' overlay runs at 8900 on vds01-wld01-01b, so
@@ -384,7 +388,11 @@ def task_firefox_vmca(lsf, db, ts, dry_run):
         spec = importlib.util.spec_from_file_location('ate2704ffcerts', os.path.join(HERE, 'ate2704ffcerts.py'))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        mod.run(lsf, vcenters=lsf.get_config_list('VCFFINAL', 'firefox_vmca_vcenters') or None, dry_run=dry_run)
+        vcenters = lsf.get_config_list('VCFFINAL', 'firefox_vmca_vcenters') or None
+        if vcenters is None and STAGE.get('region_a_removed'):
+            # Region B recovery template: there is no vc-mgmt-a to read a root from.
+            vcenters = [vc for vc in mod.VCENTERS if not vc.endswith('.site-a.vcf.lab')]
+        mod.run(lsf, vcenters=vcenters, dry_run=dry_run)
     except Exception as e:
         lsf.write_output(f'ATE-2704 Firefox VMCA roots: skipped ({e})')
     return True

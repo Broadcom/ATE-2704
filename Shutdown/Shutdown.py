@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # Shutdown.py - ATE-2704 lab-specific shutdown wrapper
-# Version 1.2 - 2026-11-15
+# Version 1.3 - 2026-11-19
+#   1.3: Shows each pre-shutdown step in the console Lab Status
+#        (/lmchol/hol/startup_status.txt). Until now the panel kept showing
+#        "Ready" for the 20-40 minutes before the core shutdown's Phase 1.
+#        With the Region B recovery template marker (Startup/ate2704stage.py
+#        1.5) the stage step also removes Region A from the shutdown settings.
 #   1.2: Waits for Fleet's "Shutdown component VCF Automation" workflow to
 #        finish (up to 45 min) before the management services runtime is
 #        stopped. In 1.1 the core helper stopped tracking it after ~2 min; the
@@ -304,6 +309,20 @@ def aria_prep(dry_run):
             log(f'{host}: WARNING - deploy.sh exited {rc} after {took}s; Phase 1b will shut the VM down')
 
 
+STATUS_FILE = '/lmchol/hol/startup_status.txt'   # console Lab Status (same file the core shutdown writes)
+
+
+def status(text, dry_run=False):
+    """Show the pre-shutdown step in the console Lab Status. Never raises; skipped on dry runs."""
+    if dry_run:
+        return
+    try:
+        with open(STATUS_FILE, 'w') as f:
+            f.write(text)
+    except OSError as e:
+        log(f'(could not update the Lab Status: {e})')
+
+
 def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--dry-run', '-n', action='store_true')
@@ -317,16 +336,20 @@ def main():
 
     if not (args.help or args.version or args.skip_aria_prep):
         lsf.init(router=False)
+        status('Shutdown: checking the upgrade stage', args.dry_run)
         try:
             stage_prep()
         except Exception as e:  # never block the core shutdown
             log(f'WARNING - stage detection failed ({e}); the core shutdown uses the current settings')
         if wanted(args.phase, args.phases):
-            for step in (vcfa_prep, vsp_prep):
+            for step, text in ((vcfa_prep, 'Shutdown: powering off VCF Automation'),
+                               (vsp_prep, 'Shutdown: stopping VCF services runtimes')):
+                status(text, args.dry_run)
                 try:
                     step(args.dry_run)
                 except Exception as e:  # never block the core shutdown
                     log(f'WARNING - {step.__name__} failed: {e}')
+            status('Shutdown: stopping Aria Automation services', args.dry_run)
             try:
                 aria_prep(args.dry_run)
             except Exception as e:  # never block the core shutdown

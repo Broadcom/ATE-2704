@@ -3,6 +3,20 @@
 Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 (Shutdown.py v2.8, VCFshutdown.py as on the Manager).
 
+## 2026-11-19: Region B recovery template (no Region A)
+
+**Why.** A second, smaller template lets students who fall behind carry on with Lab 4 (import and upgrade wld01-b) and Lab 5 (Aria Automation upgrade). It is a copy of a lab at the end of Lab 3, checked against the current Lab 3 guide on .32, with the Region A vCenter (`vc-mgmt-a`) and hosts (`esx-01a` to `esx-04a`) deleted. `user-vm-a` and `user-vm-b` go with the hosts. Labs 4 and 5 only use Region B, and Region B has no dependency on Region A: separate SSO domains, DNS and NTP on 10.2.1.1, and its own VCF Operations, Fleet, identity broker and license server. The shared services with site-a names stay in the template: the offline depot (SDDC Manager depot, VKS content libraries on port 8080, Gitea), the VCF Installer, the router (NSX and vCenter backups) and the console.
+
+**Problem.** The repo `config.ini` serves every copy and lists the Region A hosts, vCenter, datastore, cluster and test VMs. On a lab without them the core `ESXi.py` would wait for the missing hosts and the startup would fail. Stage detection would also fail on the unreachable hosts and fall back to the baseline settings, losing the Region B upgrade stages.
+
+**Change.**
+- The recovery template's Manager has the marker file `/home/holuser/ate2704-no-region-a`. A marker is used instead of an unreachable host or a DNS check, because the Region A names stay in DNS and a slow Region A on the normal template must never be dropped.
+- `Startup/ate2704stage.py` 1.5: `strip_region_a()` removes the Region A entries from `[RESOURCES]`, `[VCF]`, `[VCFFINAL]` and `[SHUTDOWN]`: hosts, vCenter, `vsan-mgmt-01a`, `cluster-mgmt-01a`, the test VMs, and their pings (10.1.1.10, 10.1.11.130, 10.1.11.131), ports and URLs. With the marker, `detect()` connects only to the Region B hosts, `apply_overlay()` strips Region A first (so the shutdown also gets it), and the stage summary says "Region A removed (Region B recovery template)".
+- New `Startup/ESXi.py` wrapper: with the marker, it strips Region A from the running settings and `/tmp/config.ini` before the core `ESXi.py` checks the hosts, then runs the core module unchanged. Without the marker it only runs the core module.
+- `Startup/VCFfinal.py` 1.13: with the marker, Task 0c (Firefox VMCA roots) reads only the Region B vCenters.
+
+Labs without the marker behave exactly as before. To build the template: copy a lab at the end of Lab 3, delete `vc-mgmt-a` and `esx-01a` to `esx-04a`, then on the Manager run `touch ~/ate2704-no-region-a` before the next startup.
+
 ## 2026-11-17: lab CA signing helper for VCF certificates (sign-csr.py)
 
 **Problem.** In VCF 9.1, the components that the VCF Installer converge (Region A) or the management services install (Region B) deploys get certificates from the management vCenter's VMCA: SDDC Manager, NSX, the VCF services runtime and fleet. The converge also re-issues the VCF Installer's own certificate about 90 minutes in. The console Firefox trusts only vcf.lab Root Authority. These sites also send HSTS, so after a VMCA certificate replaces a trusted one, Firefox blocks the page with no "Accept the risk" option. VCF Operations, its cloud proxy and the license server use their own self-signed CAs. vCenter, ESX and the in-place-upgraded Region B SDDC Manager keep their vcf.lab certificates.
