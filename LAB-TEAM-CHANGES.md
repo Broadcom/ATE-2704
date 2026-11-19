@@ -12,6 +12,7 @@ Date: 2026-11-04. Core checked against: HOLFY27-MGR-HOLUSER commit `5be280a`
 **Change.**
 - The recovery template's Manager has the marker file `/home/holuser/ate2704-no-region-a`. A marker is used instead of an unreachable host or a DNS check, because the Region A names stay in DNS and a slow Region A on the normal template must never be dropped.
 - `Startup/ate2704stage.py` 1.5: `strip_region_a()` removes the Region A entries from `[RESOURCES]`, `[VCF]`, `[VCFFINAL]` and `[SHUTDOWN]`: hosts, vCenter, `vsan-mgmt-01a`, `cluster-mgmt-01a`, the test VMs, and their pings (10.1.1.10, 10.1.11.130, 10.1.11.131), ports and URLs. With the marker, `detect()` connects only to the Region B hosts, `apply_overlay()` strips Region A first (so the shutdown also gets it), and the stage summary says "Region A removed (Region B recovery template)".
+- `Startup/ate2704stage.py` 1.6: the recovery template also drops the VCF Installer (`vcfinstaller-a`, 10.1.10.250) from the pings, ports and URLs. Labs 4 and 5 do not use it, so it stays in the template powered off and can be powered on if a test needs it.
 - New `Startup/ESXi.py` wrapper: with the marker, it strips Region A from the running settings and `/tmp/config.ini` before the core `ESXi.py` checks the hosts, then runs the core module unchanged. Without the marker it only runs the core module.
 - `Startup/VCFfinal.py` 1.13: with the marker, Task 0c (Firefox VMCA roots) reads only the Region B vCenters.
 

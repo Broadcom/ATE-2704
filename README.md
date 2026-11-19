@@ -138,8 +138,9 @@ of a lab at the end of Lab 3 with the Region A vCenter (`vc-mgmt-a`) and hosts
 the Region A vCenter, hosts, datastore, cluster, test VMs and their checks from
 the settings before the host checks, and stage detection only looks at the
 Region B hosts, so the Region B upgrade stages still apply. The shutdown does
-the same. The offline depot, VCF Installer, router and console stay. Labs
-without the marker are unchanged.
+the same. The offline depot, router and console stay. The VCF Installer stays
+in the template but is not checked, so it can be left powered off (Labs 4 and
+5 do not use it). Labs without the marker are unchanged.
 
 To build it: copy a lab at the end of Lab 3, delete `vc-mgmt-a` and the four
 `esx-0Xa` hosts, and run `touch ~/ate2704-no-region-a` on the Manager before

@@ -1,5 +1,7 @@
 # ate2704stage.py - ATE-2704 upgrade-stage detection and config overlay
-# Version 1.5 - 2026-11-19
+# Version 1.6 - 2026-11-19
+#   1.6: The recovery template also drops the VCF Installer (vcfinstaller-a,
+#        10.1.10.250) from the checks, so it can stay powered off there.
 #   1.5: Region B recovery template. A lab whose Manager has the marker file
 #        /home/holuser/ate2704-no-region-a has no Region A vCenter or hosts
 #        (a copy of a lab at the end of Lab 3, for students who move on to
@@ -10,7 +12,7 @@
 #        Startup/ESXi.py strips them before the core ESXi.py checks the hosts;
 #        apply_overlay() strips them too (Shutdown/Shutdown.py, standalone runs).
 #        Shared services with site-a names (offline depot, VCF Installer,
-#        router, console) are kept. Labs without the marker are unchanged.
+#        router, console) are kept (see 1.6 for the VCF Installer). Labs without the marker are unchanged.
 #   1.4: Region A after the VVF 9.1.1 upgrade: the VCF Installer deploys VCF
 #        Operations as ops-01a and the license server as license-a (the vSphere
 #        9.1.1 path uses ops-a and license-server). region_a_9 now detects and
@@ -190,9 +192,11 @@ VM_LISTS = [('VCF', 'vcfpostedgevms'), ('RESOURCES', 'VMs'), ('VCFFINAL', 'vravm
 # Region B recovery template (see 1.5): Region A vCenter and hosts removed.
 REGION_A_MARKER = '/home/holuser/ate2704-no-region-a'
 # Names that only exist in Region A's nested environment (whole names, so that
-# vcfinstaller-a, offlinedepot.site-a and router.site-a are not matched).
-REGION_A_NAMES = re.compile(r'(?<![\w-])(esx-0[1-4]a|vc-mgmt-a|user-vm-[ab]|vsan-mgmt-01a|cluster-mgmt-01a)(?![\w-])')
-REGION_A_IPS = {'10.1.1.10', '10.1.11.130', '10.1.11.131'}   # vc-mgmt-a, user-vm-a, user-vm-b
+# offlinedepot.site-a and router.site-a are not matched). vcfinstaller-a is
+# included too (1.6): Labs 4 and 5 do not use it, so it may be powered off.
+REGION_A_NAMES = re.compile(r'(?<![\w-])(esx-0[1-4]a|vc-mgmt-a|user-vm-[ab]|vsan-mgmt-01a|cluster-mgmt-01a|vcfinstaller-a)(?![\w-])')
+REGION_A_IPS = {'10.1.1.10', '10.1.11.130', '10.1.11.131',   # vc-mgmt-a, user-vm-a, user-vm-b
+                '10.1.10.250'}                              # vcfinstaller-a (1.6)
 REGION_A_SECTIONS = ('RESOURCES', 'VCF', 'VCFFINAL', 'SHUTDOWN')
 
 
