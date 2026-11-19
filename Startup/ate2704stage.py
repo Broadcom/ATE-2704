@@ -1,5 +1,18 @@
 # ate2704stage.py - ATE-2704 upgrade-stage detection and config overlay
-# Version 1.4 - 2026-11-16
+# Version 1.6 - 2026-11-19
+#   1.6: The recovery template also drops the VCF Installer (vcfinstaller-a,
+#        10.1.10.250) from the checks, so it can stay powered off there.
+#   1.5: Region B recovery template. A lab whose Manager has the marker file
+#        /home/holuser/ate2704-no-region-a has no Region A vCenter or hosts
+#        (a copy of a lab at the end of Lab 3, for students who move on to
+#        Labs 4 and 5). strip_region_a() removes vc-mgmt-a, esx-01a..04a,
+#        vsan-mgmt-01a, cluster-mgmt-01a, user-vm-a/b and their pings, ports
+#        and URLs from the startup and shutdown settings; detect() then only
+#        connects to the Region B hosts, so the Region B stages still apply.
+#        Startup/ESXi.py strips them before the core ESXi.py checks the hosts;
+#        apply_overlay() strips them too (Shutdown/Shutdown.py, standalone runs).
+#        Shared services with site-a names (offline depot, VCF Installer,
+#        router, console) are kept (see 1.6 for the VCF Installer). Labs without the marker are unchanged.
 #   1.4: Region A after the VVF 9.1.1 upgrade: the VCF Installer deploys VCF
 #        Operations as ops-01a and the license server as license-a (the vSphere
 #        9.1.1 path uses ops-a and license-server). region_a_9 now detects and
@@ -38,6 +51,8 @@
 # A lab that has not been upgraded gets no changes at all.
 #
 # Used by:
+#   Startup/ESXi.py     Region B recovery template only: remove Region A from
+#                       lsf.config and /tmp/config.ini before the host checks
 #   Startup/VCF.py      detect over direct ESXi connections, apply the overlay
 #                       to lsf.config and /tmp/config.ini, then run the core VCF.py
 #   Startup/VCFfinal.py read the saved stage (or detect again) and report
@@ -174,6 +189,42 @@ VM_LISTS = [('VCF', 'vcfpostedgevms'), ('RESOURCES', 'VMs'), ('VCFFINAL', 'vravm
             ('VCFFINAL', 'xregion_vms')]
 
 
+# Region B recovery template (see 1.5): Region A vCenter and hosts removed.
+REGION_A_MARKER = '/home/holuser/ate2704-no-region-a'
+# Names that only exist in Region A's nested environment (whole names, so that
+# offlinedepot.site-a and router.site-a are not matched). vcfinstaller-a is
+# included too (1.6): Labs 4 and 5 do not use it, so it may be powered off.
+REGION_A_NAMES = re.compile(r'(?<![\w-])(esx-0[1-4]a|vc-mgmt-a|user-vm-[ab]|vsan-mgmt-01a|cluster-mgmt-01a|vcfinstaller-a)(?![\w-])')
+REGION_A_IPS = {'10.1.1.10', '10.1.11.130', '10.1.11.131',   # vc-mgmt-a, user-vm-a, user-vm-b
+                '10.1.10.250'}                              # vcfinstaller-a (1.6)
+REGION_A_SECTIONS = ('RESOURCES', 'VCF', 'VCFFINAL', 'SHUTDOWN')
+
+
+def region_a_removed():
+    """True on the Region B recovery template (marker file on the Manager)."""
+    return os.path.isfile(os.environ.get('ATE2704_NO_REGION_A_MARKER', REGION_A_MARKER))
+
+
+def _region_a_entry(entry):
+    return bool(REGION_A_NAMES.search(entry)) or entry.split(':')[0].strip() in REGION_A_IPS
+
+
+def strip_region_a(cfg, log=print):
+    """Remove the Region A vCenter, hosts, datastore, cluster, test VMs and their checks
+    from cfg. Returns a list of change descriptions (empty if there was nothing to remove)."""
+    changes = []
+    for sec in REGION_A_SECTIONS:
+        if not cfg.has_section(sec):
+            continue
+        for opt in cfg.options(sec):
+            cur = _lines(cfg, sec, opt)
+            new = [c for c in cur if not _region_a_entry(c)]
+            if new != cur:
+                _store(cfg, sec, opt, new)
+                changes.append(f'[{sec}] {opt} (no Region A): removed {", ".join(c for c in cur if c not in new)}')
+    return changes
+
+
 def _lines(cfg, sec, opt):
     if not cfg.has_option(sec, opt):
         return []
@@ -235,9 +286,13 @@ def detect(lsf, hosts=None):
     """Detect the lab stage over direct ESXi connections. Returns a dict (see save())."""
     if hosts is None:
         hosts = [l.split(':')[0].strip() for l in lsf.get_config_list('VCF', 'vcfmgmtcluster')]
+    no_region_a = region_a_removed()
+    if no_region_a:
+        hosts = [h for h in hosts if not _region_a_entry(h)]
     vms, versions, errors = _esx_inventory(hosts, 'root', lsf.get_password(), lsf.write_output)
     names = sorted(vms)
     stage = {'ok': bool(vms) and not errors, 'errors': errors, 'hosts_checked': len(hosts),
+             'region_a_removed': no_region_a,
              'esx_versions': versions, 'stages': {}, 'evidence': {}, 'old_aria_present': []}
     for st, pats in STAGE_VMS.items():
         found = sorted({n for p in pats for n in _matches(p, names)})
@@ -259,6 +314,8 @@ def summary(stage):
     s = stage.get('stages', {})
     ra = ('VCF 9.1 (converged)' if s.get('region_a_vcf') else 'VVF 9.1' + (' + services runtime' if s.get('region_a_vsp') else '')
           ) if s.get('region_a_9') else '8.0 U3 (not upgraded)'
+    if stage.get('region_a_removed'):
+        ra, s = 'removed (Region B recovery template)', dict(s, region_a_vpc=False)
     parts = [f"Region A {ra}" + (', test VMs on VPC subnets' if s.get('region_a_vpc') else ''),
              f"Region B mgmt {'VCF 9.1' if s.get('region_b_9') else 'VCF 5.2.1 (not upgraded)'}",
              f"Automation {'VCF Automation 9.1' if s.get('automation_9') else 'Aria Automation 8.18.1'}",
@@ -303,10 +360,14 @@ def _expand(values, stage):
 
 def apply_overlay(cfg, stage, log=print):
     """Change cfg (a ConfigParser) for the detected stage. Returns a list of change descriptions.
-    Does nothing if detection did not succeed."""
+    Does nothing if detection did not succeed, except remove Region A on the
+    Region B recovery template."""
     changes = []
+    if region_a_removed():
+        changes += strip_region_a(cfg, log)
     if not stage.get('ok'):
-        log('Stage detection incomplete - keeping the baseline config.ini unchanged')
+        log('Stage detection incomplete - keeping the baseline config.ini unchanged'
+            + (' (apart from removing Region A)' if changes else ''))
         return changes
     names = stage.get('vm_names', [])
     # Combine the 'add' values of all active stages per setting first, so that the

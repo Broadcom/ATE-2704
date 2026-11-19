@@ -129,8 +129,28 @@ the ESX versions. Each stage is detected on its own:
 A lab that has not been upgraded gets no changes. If detection fails, the
 baseline `config.ini` is used, as before.
 
+### Region B recovery template
+
+A second template for students who need to skip ahead to Labs 4 and 5: a copy
+of a lab at the end of Lab 3 with the Region A vCenter (`vc-mgmt-a`) and hosts
+(`esx-01a` to `esx-04a`) deleted. Its Manager has the marker file
+`/home/holuser/ate2704-no-region-a`. With the marker, `Startup/ESXi.py` removes
+the Region A vCenter, hosts, datastore, cluster, test VMs and their checks from
+the settings before the host checks, and stage detection only looks at the
+Region B hosts, so the Region B upgrade stages still apply. The shutdown does
+the same. The offline depot, router and console stay. The VCF Installer stays
+in the template but is not checked, so it can be left powered off (Labs 4 and
+5 do not use it). Labs without the marker are unchanged.
+
+To build it: copy a lab at the end of Lab 3, delete `vc-mgmt-a` and the four
+`esx-0Xa` hosts, and run `touch ~/ate2704-no-region-a` on the Manager before
+the next startup.
+
 ### Startup
 
+0. **`Startup/ESXi.py`** (wraps the core module) only acts on the Region B
+   recovery template: it removes Region A from the settings, then runs the core
+   `ESXi.py` unchanged.
 1. **`Startup/VCF.py`** (wraps the core module) runs as soon as the ESX hosts
    answer. It detects the stage, applies the changes to the running settings and
    to `/tmp/config.ini` (the original is kept as `/tmp/config.ini.base`), copies
@@ -183,6 +203,7 @@ ATE-2704/
 │   ├── ate2704stage.py        Upgrade-stage detection and the settings for each stage
 │   ├── ate2704labfiles.py     Copies lab-files/ and lab-build/ to the console
 │   ├── ate2704sddcperms.py    Fixes SDDC Manager file permissions (precheck)
+│   ├── ESXi.py                Wrapper around the core ESXi.py (Region B recovery template)
 │   ├── VCF.py                 Wrapper around the core VCF.py (stage + lab files)
 │   └── VCFfinal.py            Lab-specific replacement for the core VCFfinal.py
 ├── Shutdown/
